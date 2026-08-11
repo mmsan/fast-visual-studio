@@ -20,6 +20,22 @@ Keep these identities stable:
 - `FastVisualStudioBridge/BridgeOptions.cs`: Tools | Options settings.
 - `FAST_VISUAL_STUDIO_BRIDGE_PROTOCOL.md`: public protocol notes.
 
+## Cross-project Node.js WebSocket service
+
+The plugin connects to a Node.js service maintained in the Fast repository:
+
+- `D:\v\fast\utils\socket-browser.js`: the generic WebSocket entry point on port `19900`; it forwards messages and close events to both IDE bridge modules.
+- `D:\v\fast\utils\visual-studio-socket.js`: Visual Studio handshake recognition, instance/project/socket caches, editor-state caches, current-window queries, subscriptions, command helpers, and disconnect cleanup.
+- `D:\v\fast\utils\f.mjs`: file navigation routing; when the selected/current IDE process is `devenv`, `gotoJs_()` prefers the matching Visual Studio Bridge connection and retains UI automation as fallback.
+
+When changing the handshake client name, source/project identities, event fields, command names, or command payloads, inspect and update the Node.js bridge in the same change. Keep `client: fast-visual-studio-bridge` stable. After Node-side changes, run:
+
+```powershell
+node --check D:\v\fast\utils\visual-studio-socket.js
+node --check D:\v\fast\utils\socket-browser.js
+node --check D:\v\fast\utils\f.mjs
+```
+
 ## Safety and compatibility
 
 - Mutating commands require `target.instanceId` and ignore other instances.
@@ -30,7 +46,7 @@ Keep these identities stable:
 
 ## Build
 
-Build the solution with Visual Studio 2022 or MSBuild after NuGet restore. The installable artifact is the generated `.vsix` under `FastVisualStudioBridge/bin/<Configuration>/net472`.
+Build the solution with Visual Studio 2022 or MSBuild after NuGet restore. VSSDK first generates the package under `FastVisualStudioBridge/bin/<Configuration>/net472`; the build wrapper then copies the user-facing installable artifact to the stable shallow path `dist/FastVisualStudioBridge.vsix`.
 
 Use the repository build wrapper instead of invoking `dotnet build` for a distributable package:
 
@@ -38,7 +54,7 @@ Use the repository build wrapper instead of invoking `dotnet build` for a distri
 .\build-plugin.cmd
 ```
 
-The wrapper locates full-framework Visual Studio MSBuild, performs a Release rebuild, verifies the VSIX exists, and prints its version, absolute path, size, and SHA-256. The VSSDK packaging tasks are not reliably compatible with the .NET Core MSBuild host, so a successful `dotnet build` is not sufficient release verification.
+The wrapper locates full-framework Visual Studio MSBuild, performs a Release rebuild, verifies the VSIX exists, copies it to `dist/FastVisualStudioBridge.vsix`, and prints its version, absolute path, size, and SHA-256. The `dist` directory is generated and must remain ignored by Git. The VSSDK packaging tasks are not reliably compatible with the .NET Core MSBuild host, so a successful `dotnet build` is not sufficient release verification.
 
 ## Local update publishing
 

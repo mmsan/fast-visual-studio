@@ -30,7 +30,8 @@ try {
     & (Join-Path $projectRoot 'build-plugin.ps1') -Configuration Release
     if ($LASTEXITCODE -ne 0) { throw "VSIX build failed with exit code $LASTEXITCODE" }
 
-    $vsix = Join-Path $projectRoot 'FastVisualStudioBridge\bin\Release\net472\FastVisualStudioBridge.vsix'
+    $vsix = Join-Path $projectRoot 'dist\FastVisualStudioBridge.vsix'
+    if (-not (Test-Path -LiteralPath $vsix)) { throw "Release VSIX was not found: $vsix" }
     New-Item -ItemType Directory -Path $RepositoryPath -Force | Out-Null
     $publishedName = "fast-visual-studio-bridge-$($newVersion.ToString(3)).vsix"
     $publishedPath = Join-Path $RepositoryPath $publishedName

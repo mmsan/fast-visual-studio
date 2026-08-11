@@ -34,8 +34,13 @@ if (-not $msbuild) { throw 'Visual Studio MSBuild was not found. Install the Vis
 & $msbuild $solution /t:Rebuild "/p:Configuration=$Configuration" /m /v:minimal
 if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
 
-$vsix = Join-Path $projectRoot "FastVisualStudioBridge\bin\$Configuration\net472\FastVisualStudioBridge.vsix"
-if (-not (Test-Path -LiteralPath $vsix)) { throw "VSIX was not produced: $vsix" }
+$builtVsix = Join-Path $projectRoot "FastVisualStudioBridge\bin\$Configuration\net472\FastVisualStudioBridge.vsix"
+if (-not (Test-Path -LiteralPath $builtVsix)) { throw "VSIX was not produced: $builtVsix" }
+
+$distDirectory = Join-Path $projectRoot 'dist'
+$vsix = Join-Path $distDirectory 'FastVisualStudioBridge.vsix'
+New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
+Copy-Item -LiteralPath $builtVsix -Destination $vsix -Force
 
 $item = Get-Item -LiteralPath $vsix
 $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $vsix

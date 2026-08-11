@@ -12,7 +12,7 @@
 
 ## 构建和安装
 
-用 Visual Studio 2022 打开 `FastVisualStudioBridge.sln`，还原 NuGet 包后生成解决方案。生成的 VSIX 位于 `FastVisualStudioBridge/bin/Debug` 或 `FastVisualStudioBridge/bin/Release`，双击即可安装。
+用 Visual Studio 2022 打开 `FastVisualStudioBridge.sln`，还原 NuGet 包后生成解决方案。使用项目构建脚本后，最终安装包统一放在 `dist/FastVisualStudioBridge.vsix`，双击即可安装。
 
 推荐使用完整构建命令：
 
