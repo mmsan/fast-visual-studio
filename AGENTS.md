@@ -1,34 +1,29 @@
 # Fast Visual Studio Bridge — Agent Guide
 
-## Project overview
+## Stable identity and scope
 
-Fast Visual Studio Bridge is a Visual Studio 2022 VSIX that mirrors the Fast Idea Bridge wire protocol. It publishes solution, native-window, focus, active document, caret, selection, and bounded source-context data over WebSocket. It accepts state, project-list, navigation, selection, find, and focus commands.
-
-Keep these identities stable:
+Fast Visual Studio Bridge is a Visual Studio VSIX that mirrors the Fast editor-bridge protocol over the local WebSocket service.
 
 - Display name: `Fast Visual Studio Bridge`
-- VSIX ID: `FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F`
+- VSIX ID: `FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F` — never change it; updates require this stable ID.
 - Package GUID: `27861355-a640-4497-911a-ea99b558e93f`
-- Client handshake name: `fast-visual-studio-bridge`
-- Target: Visual Studio 2022, .NET Framework 4.7.2
+- Handshake client: `fast-visual-studio-bridge` — keep it stable.
+- Target: Visual Studio 2022 (17.x) and 2026 (18.x), .NET Framework 4.7.2.
 
-## Important files
+Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `SnapshotCollector.cs` (editor state), `BridgeCommands.cs` (identity/commands/path safety), `BridgeOptions.cs` (settings), `LocalUpdateService.cs` (loopback updater), and the protocol/release files.
 
-- `FastVisualStudioBridge/BridgeService.cs`: WebSocket lifecycle, reconnect, events, and sending.
-- `FastVisualStudioBridge/SnapshotCollector.cs`: focused native control and active editor extraction.
-- `FastVisualStudioBridge/BridgeCommands.cs`: identity, safe path resolution, and commands.
-- `FastVisualStudioBridge/BridgeOptions.cs`: Tools | Options settings.
-- `FAST_VISUAL_STUDIO_BRIDGE_PROTOCOL.md`: public protocol notes.
+## Runtime, safety, and compatibility
 
-## Cross-project Node.js WebSocket service
+- Default endpoint is `ws://127.0.0.1:19900`; host, port, path, bearer token, auto-connect, text sharing, and context length remain configurable.
+- Mutating commands, including `command.copyResourcePath`, require `target.instanceId` and ignore other instances. The copy command handles only one selected file/directory in a focused Solution Explorer; otherwise return `data.handled: false`.
+- Restrict navigation to roots in the open solution/projects. Keep DTE access on the Visual Studio UI thread.
+- Never log source text or bearer tokens. Keep additions backward compatible with protocol version 1.
 
-The plugin connects to a Node.js service maintained in the Fast repository:
+## Fast-side synchronization
 
-- `D:\v\fast\utils\socket-browser.js`: the generic WebSocket entry point on port `19900`; it forwards messages and close events to both IDE bridge modules.
-- `D:\v\fast\utils\visual-studio-socket.js`: Visual Studio handshake recognition, instance/project/socket caches, editor-state caches, current-window queries, subscriptions, command helpers, and disconnect cleanup.
-- `D:\v\fast\utils\f.mjs`: file navigation routing; when the selected/current IDE process is `devenv`, `gotoJs_()` prefers the matching Visual Studio Bridge connection and retains UI automation as fallback.
+The Node.js service is in `D:\v\fast`: `utils/socket-browser.js` (server), `utils/visual-studio-socket.js` (adapter), and `utils/f.mjs` (navigation routing). Any handshake, identity, event, command, or payload change must update the adapter, IntelliJ/VS Code counterparts, affected protocol docs, and README examples. Preserve routing, targeting, path safety, text-sharing, reconnect, and disposal behavior.
 
-When changing the handshake client name, source/project identities, event fields, command names, or command payloads, inspect and update the Node.js bridge in the same change. Keep `client: fast-visual-studio-bridge` stable. After Node-side changes, run:
+Run after Node-side changes:
 
 ```powershell
 node --check D:\v\fast\utils\visual-studio-socket.js
@@ -36,62 +31,51 @@ node --check D:\v\fast\utils\socket-browser.js
 node --check D:\v\fast\utils\f.mjs
 ```
 
-## Safety and compatibility
+For a shared change, verify all three installable packages with their repository procedures; `dotnet build` alone is not package verification.
 
-- Mutating commands require `target.instanceId` and ignore other instances.
-- Navigation is restricted to roots represented by the open solution/projects.
-- Never move DTE access off the Visual Studio UI thread.
-- Never log source text or bearer tokens.
-- Keep additions backward compatible with protocol version 1.
+## Build and package verification
 
-## Build
-
-Build the solution with Visual Studio 2022 or MSBuild after NuGet restore. VSSDK first generates the package under `FastVisualStudioBridge/bin/<Configuration>/net472`; the build wrapper then copies the user-facing installable artifact to the stable shallow path `dist/FastVisualStudioBridge.vsix`.
-
-Use the repository build wrapper instead of invoking `dotnet build` for a distributable package:
+Use the wrapper for a distributable package:
 
 ```powershell
 .\build-plugin.cmd
 ```
 
-The wrapper locates full-framework Visual Studio MSBuild, performs a Release rebuild, verifies the VSIX exists, copies it to `dist/FastVisualStudioBridge.vsix`, and prints its version, absolute path, size, and SHA-256. The `dist` directory is generated and must remain ignored by Git. The VSSDK packaging tasks are not reliably compatible with the .NET Core MSBuild host, so a successful `dotnet build` is not sufficient release verification.
+It uses full-framework Visual Studio MSBuild, performs a Release rebuild, verifies the VSSDK VSIX, copies `dist/FastVisualStudioBridge.vsix`, and prints version, absolute path, size, and SHA-256. VSSDK packaging is not reliably compatible with .NET Core MSBuild. `dist` is generated and must remain Git-ignored.
 
 ## Local update publishing
 
-The local private-gallery repository defaults to:
-
-```text
-D:\docker\www\vs-extensions
-```
-
-It is expected to be served by the existing local Nginx instance at:
+The private gallery is normally `D:\docker\www\vs-extensions`, served at:
 
 ```text
 http://127.0.0.1:8800/vs-extensions/AtomFeed.xml
 ```
 
-Publish a new update with:
+Publish with:
 
 ```powershell
 .\publish-local-plugin.cmd
 ```
 
-The publish script must preserve this workflow:
+The workflow must:
 
-1. Read the VSIX version from `source.extension.vsixmanifest`.
-2. Increment the patch component unless `-NoVersionBump` is supplied.
-3. Keep `AssemblyVersion` and `AssemblyFileVersion` synchronized with the VSIX version.
-4. Restore all original version files if any required publish step fails.
-5. Build the Release VSIX through `build-plugin.ps1`.
-6. Copy it to the private gallery with a versioned filename.
-7. Locate `VsixUtil.exe` from the restored `Microsoft.VSSDK.BuildTools` package.
-8. Regenerate `AtomFeed.xml` from all VSIX files in the gallery.
-9. Attempt to verify the HTTP feed URL and report a warning, without discarding a valid local publication, if Nginx is stopped.
+1. Read `source.extension.vsixmanifest` and increment its patch version unless `-NoVersionBump` is supplied.
+2. Keep `AssemblyVersion` and `AssemblyFileVersion` synchronized; restore all version files on failure.
+3. Build the Release VSIX via `build-plugin.ps1` and copy the versioned file to the gallery.
+4. Locate `VsixUtil.exe` from the restored `Microsoft.VSSDK.BuildTools` package.
+5. Generate `AtomFeed.xml` from only the new VSIX in an isolated temporary directory, replace the feed, and keep old VSIX files for rollback.
+6. Verify the HTTP feed when possible; if Nginx is stopped, warn without discarding a valid local publication.
 
-Use `-NoVersionBump` only when retrying a version that was already bumped by an interrupted or manually completed workflow. Visual Studio identifies updates by the stable VSIX ID plus a strictly higher manifest version; never change the VSIX ID to publish an update.
+Use `-NoVersionBump` only to retry an interrupted/manual version bump. Updates require the stable VSIX ID and a strictly higher manifest version.
 
-Users register the feed once under **Tools | Options | Environment | Extensions | Additional Extension Galleries**, then enable automatic update checks and automatic extension installation. Visual Studio may download and schedule an update automatically, but loaded VSIX assemblies cannot be hot-replaced; the user normally must restart Visual Studio before the new version is active.
+For a coordinated release, use the highest current version across IDEA, Visual Studio, and VS Code, increment the patch component once, write that exact version to the VSIX manifest, `AssemblyInfo.cs`, IDEA `gradle.properties`, VS Code `package.json`/`package-lock.json`, and `D:\v\fast\bridge-version.json` when maintained. Then run this publisher with `-NoVersionBump`; do not independently bump Visual Studio. Verify the Atom feed `<Vsix><Version>` and `<content src>` point to the shared-version VSIX.
 
-## Git backup
+Users add the feed under **Tools | Options | Environment | Extensions | Additional Extension Galleries**, enable automatic checks/installation, and restart Visual Studio when the update becomes active.
 
-`git-backup.bat` is the repeatable repository backup command. It initializes Git if needed, normalizes the branch to `master`, commits staged changes as `backup` only when changes exist, ensures `origin` points to `https://gitee.com/mmsan/fast-visual-studio.git`, and pushes `master`. Keep build output excluded through `.gitignore`.
+Community may lack custom galleries, so preserve the built-in updater: it checks the loopback feed after startup and at a configurable interval (default 30 minutes, minimum 5), accepts only the stable ID and newer version, requires loopback feed/package URLs, downloads under `%LocalAppData%\Mirror\FastVisualStudioBridge\Updates`, and waits for `devenv` to exit before running `VSIXInstaller.exe /quiet`. Never execute feed-supplied commands or weaken the loopback restriction.
+
+## Change discipline
+
+- Preserve settings and defaults for older state; update protocol/docs after externally visible changes.
+- Do not log source text, selections, passwords, or credentials; keep callbacks non-blocking.
+- Dispose listeners, timers, sockets, and helpers. Do not overwrite a loaded VSIX; use the supported publish/install flow.

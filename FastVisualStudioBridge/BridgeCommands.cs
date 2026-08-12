@@ -1,5 +1,7 @@
 using EnvDTE;
+using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Shell.Interop;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -24,6 +26,30 @@ namespace FastVisualStudioBridge
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern IntPtr GetFocus();
+        [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
+        [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+        [DllImport("user32.dll")] private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
+        private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr parameter);
+        [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextLength(IntPtr hwnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
+        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+        [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)] private struct GuiThreadInfo
+        {
+            public int Size;
+            public uint Flags;
+            public IntPtr ActiveWindow;
+            public IntPtr FocusWindow;
+            public IntPtr CaptureWindow;
+            public IntPtr MenuOwner;
+            public IntPtr MoveSizeWindow;
+            public IntPtr Caret;
+        }
 
         internal sealed class ProjectInfo
         {
@@ -35,8 +61,6 @@ namespace FastVisualStudioBridge
         internal static object Identity(DTE dte, string installationId, string instanceId, string connectionId)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            var hwnd = dte.MainWindow.HWnd;
-            var handle = unchecked((ulong)hwnd.ToInt64()).ToString();
             return new Dictionary<string, object>
             {
                 ["client"] = "fast-visual-studio-bridge", ["clientId"] = installationId,
@@ -45,14 +69,11 @@ namespace FastVisualStudioBridge
                 ["pluginVersion"] = Assembly.GetExecutingAssembly().GetName().Version.ToString(3),
                 ["projects"] = Projects(dte).Select(p => p.ToDictionary()).ToList(),
                 ["processId"] = System.Diagnostics.Process.GetCurrentProcess().Id,
-                ["nativeWindows"] = new Dictionary<string, object>
-                {
-                    ["supported"] = true, ["activeWindowHandle"] = handle,
-                    ["windows"] = new[] { new Dictionary<string, object>
-                    { ["handle"] = handle, ["handleHex"] = "0x" + hwnd.ToInt64().ToString("X"), ["active"] = GetForegroundWindow() == hwnd, ["title"] = dte.MainWindow.Caption } },
-                    ["format"] = "unsigned decimal string; handleHex is provided for diagnostics"
-                },
-                ["capabilities"] = new[] { "state", "navigate", "select", "find", "requestFocus", "listProjects" }
+                ["nativeWindows"] = NativeWindows(dte),
+                ["fullScreen"] = IsFullScreen(dte),
+                ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
+                ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
+                ["capabilities"] = new[] { "state", "navigate", "select", "find", "requestFocus", "fullScreen", "listProjects", "copyResourcePath" }
             };
         }
 
@@ -64,6 +85,7 @@ namespace FastVisualStudioBridge
                 ["installationId"] = installationId, ["instanceId"] = instanceId, ["connectionId"] = connectionId,
                 ["projects"] = Projects(dte).Select(p => p.ToDictionary()).ToList()
             };
+            source["nativeWindows"] = NativeWindows(dte);
             try
             {
                 var file = dte.ActiveDocument?.FullName;
@@ -74,6 +96,62 @@ namespace FastVisualStudioBridge
             return source;
         }
 
+        private static IDictionary<string, object> NativeWindows(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var processId = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+            var foreground = GetForegroundWindow();
+            var mainWindow = dte.MainWindow.HWnd;
+            var windows = new List<IDictionary<string, object>>();
+            var seen = new HashSet<IntPtr>();
+
+            EnumWindows((hwnd, parameter) =>
+            {
+                GetWindowThreadProcessId(hwnd, out var ownerProcessId);
+                if (ownerProcessId != processId || !IsWindowVisible(hwnd)) return true;
+                seen.Add(hwnd);
+                windows.Add(DescribeNativeWindow(hwnd, foreground));
+                return true;
+            }, IntPtr.Zero);
+
+            if (mainWindow != IntPtr.Zero && !seen.Contains(mainWindow))
+                windows.Add(DescribeNativeWindow(mainWindow, foreground, dte.MainWindow.Caption));
+
+            return new Dictionary<string, object>
+            {
+                ["supported"] = true,
+                ["activeWindowHandle"] = foreground == IntPtr.Zero ? null : UnsignedHandle(foreground),
+                ["windows"] = windows,
+                ["format"] = "unsigned decimal string; all visible top-level windows owned by this devenv process"
+            };
+        }
+
+        private static IDictionary<string, object> DescribeNativeWindow(IntPtr hwnd, IntPtr foreground, string fallbackTitle = null)
+        {
+            var titleLength = Math.Max(0, GetWindowTextLength(hwnd));
+            var title = new StringBuilder(titleLength + 1);
+            GetWindowText(hwnd, title, title.Capacity);
+            var className = new StringBuilder(256);
+            GetClassName(hwnd, className, className.Capacity);
+            var value = new Dictionary<string, object>
+            {
+                ["handle"] = UnsignedHandle(hwnd),
+                ["handleHex"] = "0x" + unchecked((ulong)hwnd.ToInt64()).ToString("X"),
+                ["active"] = hwnd == foreground,
+                ["className"] = className.ToString(),
+                ["title"] = title.Length == 0 ? fallbackTitle : title.ToString()
+            };
+            if (GetWindowRect(hwnd, out var rect)) value["bounds"] = new Dictionary<string, object>
+            {
+                ["x"] = rect.Left, ["y"] = rect.Top,
+                ["width"] = Math.Max(0, rect.Right - rect.Left),
+                ["height"] = Math.Max(0, rect.Bottom - rect.Top)
+            };
+            return value;
+        }
+
+        private static string UnsignedHandle(IntPtr hwnd) => unchecked((ulong)hwnd.ToInt64()).ToString();
+
         internal static void Handle(string raw, BridgeService bridge, DTE dte, BridgeOptions options, FastBridgePackage package)
         {
             string id = null;
@@ -83,7 +161,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -103,6 +181,8 @@ namespace FastVisualStudioBridge
                             case "command.select": data = Navigate(dte, payload, target, true); break;
                             case "command.find": data = Find(dte, payload, target); break;
                             case "command.requestFocus": data = RequestFocus(dte); break;
+                            case "command.fullScreen": data = FullScreen(dte); break;
+                            case "command.copyResourcePath": data = CopyResourcePath(dte); break;
                             default: await bridge.SendAsync("command.result", Error(type, "UNKNOWN_COMMAND", "Unsupported command: " + type), commandId); return;
                         }
                         await bridge.SendAsync("command.result", Success(type, data), commandId);
@@ -120,7 +200,7 @@ namespace FastVisualStudioBridge
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             var resolved = Resolve(dte, (string)payload["path"], target);
-            dte.ItemOperations.OpenFile(resolved.path, Constants.vsViewKindTextView);
+            dte.ItemOperations.OpenFile(resolved.path, EnvDTE.Constants.vsViewKindTextView);
             var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument ?? throw new InvalidOperationException("File is not a text editor");
             var selection = text.Selection;
             var coordinateBase = (int?)payload["coordinateBase"] ?? 0;
@@ -163,7 +243,7 @@ namespace FastVisualStudioBridge
             }
             else { index = content.IndexOf(query, start, sensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase); length = query.Length; }
             if (index < 0) throw new CommandException("NOT_FOUND", "No match found");
-            dte.ItemOperations.OpenFile(path, Constants.vsViewKindTextView);
+            dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
             var text = (TextDocument)dte.ActiveDocument.Object("TextDocument");
             var a = text.StartPoint.CreateEditPoint(); a.MoveToAbsoluteOffset(index + 1);
             var b = text.StartPoint.CreateEditPoint(); b.MoveToAbsoluteOffset(index + length + 1);
@@ -179,6 +259,184 @@ namespace FastVisualStudioBridge
             if (dte.ActiveDocument == null) throw new InvalidOperationException("No active text editor");
             FocusMainWindow(dte); dte.ActiveDocument.Activate();
             return new Dictionary<string, object> { ["project"] = ProjectForFile(dte, dte.ActiveDocument.FullName)?.Name };
+        }
+
+        internal static bool? IsFullScreen(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                var command = dte.Commands.Item("View.FullScreen");
+                try
+                {
+                    var checkedValue = command.GetType().InvokeMember(
+                        "IsChecked", BindingFlags.GetProperty, null, command, null);
+                    if (checkedValue is bool isChecked) return isChecked;
+                }
+                catch { }
+                var statusValue = command.GetType().InvokeMember(
+                    "OleStatus", BindingFlags.GetProperty, null, command, null);
+                var status = Convert.ToInt32(statusValue);
+                if ((status & 1) == 0) return null;
+                // OLECMDF_LATCHED (0x4) means the toggle command is currently on.
+                return (status & 4) != 0;
+            }
+            catch { return null; }
+        }
+
+        private static object FullScreen(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var fullScreen = IsFullScreen(dte);
+            if (fullScreen == false)
+            {
+                dte.ExecuteCommand("View.FullScreen");
+                fullScreen = true;
+            }
+            return new Dictionary<string, object> { ["fullScreen"] = fullScreen };
+        }
+
+        private static object CopyResourcePath(DTE dte)
+        {
+            var path = SelectedSolutionExplorerFile(dte, out var reason);
+            if (path == null)
+                return new Dictionary<string, object> { ["handled"] = false, ["reason"] = reason };
+            return new Dictionary<string, object> { ["handled"] = true, ["path"] = path };
+        }
+
+        private static string SelectedSolutionExplorerFile(DTE dte, out string reason)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            reason = "NO_SINGLE_RESOURCE";
+            if (!IsSolutionExplorerFocused(dte))
+            {
+                reason = "NOT_SOLUTION_EXPLORER_FOCUS";
+                return null;
+            }
+
+            var hierarchyPath = SelectedHierarchyFile();
+            if (!string.IsNullOrWhiteSpace(hierarchyPath)) return hierarchyPath;
+
+            try
+            {
+                var solutionWindow = dte.Windows.Item(EnvDTE.Constants.vsWindowKindSolutionExplorer);
+                var hierarchy = solutionWindow?.Object as UIHierarchy;
+                var selectedHierarchyItems = hierarchy?.SelectedItems as Array;
+                if (selectedHierarchyItems == null || selectedHierarchyItems.Length != 1) return null;
+
+                var hierarchyItem = selectedHierarchyItems.GetValue(0) as UIHierarchyItem;
+                var projectItem = hierarchyItem?.Object as ProjectItem;
+                if (projectItem == null || projectItem.FileCount != 1) return null;
+                var hierarchyItemPath = projectItem.FileNames[1];
+                var normalizedHierarchyItemPath = ExistingFilePath(hierarchyItemPath);
+                if (normalizedHierarchyItemPath != null) return normalizedHierarchyItemPath;
+
+                var selected = dte.SelectedItems;
+                if (selected == null || selected.Count != 1) return null;
+                var item = selected.Item(1)?.ProjectItem;
+                if (item == null || item.FileCount != 1) return null;
+                var path = item.FileNames[1];
+                return ExistingFilePath(path);
+            }
+            catch { return null; }
+        }
+
+        private static string ExistingFilePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+            try
+            {
+                var fullPath = Path.GetFullPath(path);
+                return File.Exists(fullPath) || Directory.Exists(fullPath) ? fullPath : null;
+            }
+            catch { return null; }
+        }
+
+        private static string SelectedHierarchyFile()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var monitor = Package.GetGlobalService(typeof(SVsShellMonitorSelection)) as IVsMonitorSelection;
+            if (monitor == null) return null;
+
+            IntPtr hierarchyPointer = IntPtr.Zero;
+            IntPtr selectionContainerPointer = IntPtr.Zero;
+            try
+            {
+                var hr = monitor.GetCurrentSelection(
+                    out hierarchyPointer,
+                    out var itemId,
+                    out var multiItemSelect,
+                    out selectionContainerPointer);
+                if (hr != VSConstants.S_OK || hierarchyPointer == IntPtr.Zero ||
+                    itemId == VSConstants.VSITEMID_NIL ||
+                    itemId == VSConstants.VSITEMID_ROOT ||
+                    itemId == VSConstants.VSITEMID_SELECTION) return null;
+
+                if (multiItemSelect != null) return null;
+                var hierarchy = Marshal.GetObjectForIUnknown(hierarchyPointer) as IVsHierarchy;
+                if (hierarchy == null) return null;
+
+                if (hierarchy is IVsProject project &&
+                    project.GetMkDocument(itemId, out var projectPath) == VSConstants.S_OK)
+                {
+                    var existingProjectPath = ExistingFilePath(projectPath);
+                    if (existingProjectPath != null) return existingProjectPath;
+                }
+
+                return hierarchy.GetCanonicalName(itemId, out var canonicalPath) == VSConstants.S_OK
+                    ? ExistingFilePath(canonicalPath)
+                    : null;
+            }
+            catch { return null; }
+            finally
+            {
+                if (hierarchyPointer != IntPtr.Zero) Marshal.Release(hierarchyPointer);
+                if (selectionContainerPointer != IntPtr.Zero) Marshal.Release(selectionContainerPointer);
+            }
+        }
+
+        private static bool IsSolutionExplorerFocused(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                var activeWindow = dte.ActiveWindow;
+                var solutionWindow = dte.Windows.Item(EnvDTE.Constants.vsWindowKindSolutionExplorer);
+                if (activeWindow != null && solutionWindow != null &&
+                    (activeWindow == solutionWindow ||
+                     string.Equals(activeWindow.ObjectKind, solutionWindow.ObjectKind, StringComparison.OrdinalIgnoreCase)))
+                    return true;
+            }
+            catch { }
+
+            try
+            {
+                var focus = GetFocusedWindow();
+                var explorer = dte.Windows.Item(EnvDTE.Constants.vsWindowKindSolutionExplorer).HWnd;
+                return focus != IntPtr.Zero && explorer != IntPtr.Zero &&
+                    (focus == explorer || IsChild(explorer, focus) || IsDescendant(focus, explorer));
+            }
+            catch { return false; }
+        }
+
+        private static IntPtr GetFocusedWindow()
+        {
+            var foreground = GetForegroundWindow();
+            if (foreground != IntPtr.Zero)
+            {
+                var threadId = GetWindowThreadProcessId(foreground, out _);
+                var info = new GuiThreadInfo { Size = Marshal.SizeOf(typeof(GuiThreadInfo)) };
+                if (threadId != 0 && GetGUIThreadInfo(threadId, ref info) && info.FocusWindow != IntPtr.Zero)
+                    return info.FocusWindow;
+            }
+            return GetFocus();
+        }
+
+        private static bool IsDescendant(IntPtr child, IntPtr ancestor)
+        {
+            for (var current = child; current != IntPtr.Zero; current = GetParent(current))
+                if (current == ancestor) return true;
+            return false;
         }
 
         private static void FocusMainWindow(DTE dte) { ThreadHelper.ThrowIfNotOnUIThread(); var hwnd = dte.MainWindow.HWnd; ShowWindow(hwnd, 9); SetForegroundWindow(hwnd); dte.MainWindow.Activate(); }

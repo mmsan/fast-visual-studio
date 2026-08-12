@@ -8,6 +8,10 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.VisualStudio.Editor;
+using Microsoft.VisualStudio.Text;
+using Microsoft.VisualStudio.Text.Editor;
+using Microsoft.VisualStudio.TextManager.Interop;
 
 namespace FastVisualStudioBridge
 {
@@ -16,6 +20,8 @@ namespace FastVisualStudioBridge
         private readonly FastBridgePackage package;
         private readonly DTE dte;
         private readonly BridgeOptions options;
+        private readonly IVsTextManager textManager;
+        private readonly IVsEditorAdaptersFactoryService editorAdapters;
         private readonly CancellationTokenSource lifetime = new CancellationTokenSource();
         private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
         private readonly string instanceId = Guid.NewGuid().ToString();
@@ -29,15 +35,19 @@ namespace FastVisualStudioBridge
         private WindowEvents windowEvents;
         private SolutionEvents solutionEvents;
         private DocumentEvents documentEvents;
+        private IWpfTextView activeTextView;
         private System.Threading.Timer debounce;
 
         internal string InstanceId => instanceId;
 
-        internal BridgeService(FastBridgePackage package, DTE dte, BridgeOptions options)
+        internal BridgeService(FastBridgePackage package, DTE dte, BridgeOptions options,
+            IVsTextManager textManager, IVsEditorAdaptersFactoryService editorAdapters)
         {
             this.package = package;
             this.dte = dte;
             this.options = options;
+            this.textManager = textManager;
+            this.editorAdapters = editorAdapters;
             installationId = LoadInstallationId();
         }
 
@@ -70,8 +80,9 @@ namespace FastVisualStudioBridge
             solutionEvents.Opened += OnSolutionChanged;
             solutionEvents.AfterClosing += OnSolutionChanged;
             documentEvents = events.DocumentEvents;
-            documentEvents.DocumentOpened += _ => ScheduleSnapshot("editor.state", 20);
-            documentEvents.DocumentSaved += _ => ScheduleSnapshot("editor.documentChanged", 50);
+            documentEvents.DocumentOpened += OnDocumentOpened;
+            documentEvents.DocumentSaved += OnDocumentSaved;
+            AttachActiveTextView();
             if (options.AutoConnect) runner = Task.Run(() => ConnectionLoopAsync(lifetime.Token));
         }
 
@@ -83,8 +94,64 @@ namespace FastVisualStudioBridge
         }
 
         private void OnLineChanged(TextPoint start, TextPoint end, int hint) => ScheduleSnapshot("editor.caretChanged", 40);
-        private void OnWindowActivated(Window got, Window lost) => ScheduleSnapshot("focus.changed", 40);
+        private void OnWindowActivated(Window got, Window lost)
+        {
+            AttachActiveTextView();
+            ScheduleSnapshot("focus.changed", 40);
+        }
         private void OnSolutionChanged() => ScheduleSnapshot("editor.state", 50);
+
+        private void OnDocumentOpened(Document document)
+        {
+            AttachActiveTextView();
+            SnapshotCollector.MarkEditorOpened(dte);
+            ScheduleSnapshot("editor.state", 20);
+        }
+
+        private void OnDocumentSaved(Document document) => ScheduleSnapshot("editor.documentChanged", 50);
+
+        private void AttachActiveTextView()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (textManager == null || editorAdapters == null) return;
+            if (textManager.GetActiveView(1, null, out var adapter) != 0 || adapter == null) return;
+            var view = editorAdapters.GetWpfTextView(adapter);
+            if (view == null || ReferenceEquals(view, activeTextView)) return;
+
+            DetachActiveTextView();
+            activeTextView = view;
+            activeTextView.Caret.PositionChanged += OnCaretPositionChanged;
+            activeTextView.Selection.SelectionChanged += OnSelectionChanged;
+            activeTextView.TextBuffer.Changed += OnTextBufferChanged;
+            activeTextView.Closed += OnTextViewClosed;
+        }
+
+        private void DetachActiveTextView()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var view = activeTextView;
+            activeTextView = null;
+            if (view == null) return;
+            view.Caret.PositionChanged -= OnCaretPositionChanged;
+            view.Selection.SelectionChanged -= OnSelectionChanged;
+            view.TextBuffer.Changed -= OnTextBufferChanged;
+            view.Closed -= OnTextViewClosed;
+        }
+
+        private void OnCaretPositionChanged(object sender, CaretPositionChangedEventArgs e) =>
+            ScheduleSnapshot("editor.caretChanged", 30);
+
+        private void OnSelectionChanged(object sender, EventArgs e) =>
+            ScheduleSnapshot("editor.caretChanged", 20);
+
+        private void OnTextBufferChanged(object sender, TextContentChangedEventArgs e) =>
+            ScheduleSnapshot("editor.documentChanged", 80);
+
+        private void OnTextViewClosed(object sender, EventArgs e)
+        {
+            DetachActiveTextView();
+            ScheduleSnapshot("editor.state", 20);
+        }
 
         private void ScheduleSnapshot(string type, int delay)
         {
@@ -184,6 +251,8 @@ namespace FastVisualStudioBridge
             if (textEvents != null) textEvents.LineChanged -= OnLineChanged;
             if (windowEvents != null) windowEvents.WindowActivated -= OnWindowActivated;
             if (solutionEvents != null) { solutionEvents.Opened -= OnSolutionChanged; solutionEvents.AfterClosing -= OnSolutionChanged; }
+            if (documentEvents != null) { documentEvents.DocumentOpened -= OnDocumentOpened; documentEvents.DocumentSaved -= OnDocumentSaved; }
+            DetachActiveTextView();
             sendLock.Dispose(); lifetime.Dispose();
         }
     }

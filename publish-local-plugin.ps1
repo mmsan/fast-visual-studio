@@ -41,8 +41,33 @@ try {
         Where-Object { $_.FullName -notmatch '\\lib\\' } | Sort-Object FullName -Descending | Select-Object -First 1
     if (-not $vsixUtil) { throw 'VsixUtil.exe was not found. Restore Microsoft.VSSDK.BuildTools first.' }
 
-    & $vsixUtil.FullName createVsixFeed -source $RepositoryPath -output $RepositoryPath -recursive -ignoreErrors -fileName 'AtomFeed'
-    if ($LASTEXITCODE -ne 0) { throw "Atom Feed generation failed with exit code $LASTEXITCODE" }
+    $feedWork = Join-Path ([System.IO.Path]::GetTempPath()) ("fast-vsix-feed-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $feedWork -Force | Out-Null
+    try {
+        Copy-Item -LiteralPath $publishedPath -Destination (Join-Path $feedWork $publishedName) -Force
+        & $vsixUtil.FullName createVsixFeed -source $feedWork -output $feedWork -ignoreErrors -fileName 'AtomFeed'
+        if ($LASTEXITCODE -ne 0) { throw "Atom Feed generation failed with exit code $LASTEXITCODE" }
+        $generatedFeedPath = Join-Path $feedWork 'AtomFeed.xml'
+        [xml]$generatedFeed = [System.IO.File]::ReadAllText($generatedFeedPath, [System.Text.Encoding]::UTF8)
+        $iconLink = $generatedFeed.SelectSingleNode("/*[local-name()='feed']/*[local-name()='entry']/*[local-name()='link'][@rel='icon']")
+        if ($iconLink -and $iconLink.href) {
+            $iconLink.href = [System.IO.Path]::GetFileName($iconLink.href)
+        }
+        $xmlSettings = [System.Xml.XmlWriterSettings]::new()
+        $xmlSettings.Encoding = [System.Text.UTF8Encoding]::new($false)
+        $xmlSettings.Indent = $true
+        $xmlWriter = [System.Xml.XmlWriter]::Create($generatedFeedPath, $xmlSettings)
+        try { $generatedFeed.Save($xmlWriter) } finally { $xmlWriter.Dispose() }
+        Copy-Item -LiteralPath $generatedFeedPath -Destination (Join-Path $RepositoryPath 'AtomFeed.xml') -Force
+        Get-ChildItem -LiteralPath $feedWork -File -Filter '*.png' | ForEach-Object {
+            $iconTarget = Join-Path $RepositoryPath $_.Name
+            if (-not (Test-Path -LiteralPath $iconTarget)) {
+                Copy-Item -LiteralPath $_.FullName -Destination $iconTarget
+            }
+        }
+    } finally {
+        Remove-Item -LiteralPath $feedWork -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
     $feedPath = Join-Path $RepositoryPath 'AtomFeed.xml'
     if (-not (Test-Path -LiteralPath $feedPath)) { throw "Atom Feed was not produced: $feedPath" }

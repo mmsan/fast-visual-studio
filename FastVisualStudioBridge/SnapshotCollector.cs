@@ -10,7 +10,11 @@ namespace FastVisualStudioBridge
 {
     internal static class SnapshotCollector
     {
+        private static string lastEditorKey;
+        private static long lastEditorOpenedAt;
+
         [DllImport("user32.dll")] private static extern IntPtr GetFocus();
+        [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
         [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
@@ -18,21 +22,59 @@ namespace FastVisualStudioBridge
         internal static IDictionary<string, object> Collect(DTE dte, BridgeOptions options)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            var editorOwnsFocus = ActiveEditorOwnsFocus(dte);
             return new Dictionary<string, object>
             {
-                ["focus"] = DescribeFocus(),
-                ["activeEditor"] = DescribeEditor(dte, options)
+                ["focus"] = DescribeFocus(editorOwnsFocus),
+                ["activeEditor"] = DescribeEditor(dte, options, editorOwnsFocus),
+                ["editorOpenedAt"] = EditorOpenedAt(dte),
+                ["fullScreen"] = BridgeCommands.IsFullScreen(dte)
             };
         }
 
-        private static object DescribeFocus()
+        internal static void MarkEditorOpened(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var key = CurrentEditorKey(dte);
+            if (string.IsNullOrEmpty(key)) return;
+            lastEditorKey = key;
+            lastEditorOpenedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+
+        private static long EditorOpenedAt(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var key = CurrentEditorKey(dte);
+            if (string.IsNullOrEmpty(key)) return 0;
+            if (!string.Equals(key, lastEditorKey, StringComparison.OrdinalIgnoreCase))
+            {
+                lastEditorKey = key;
+                lastEditorOpenedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            }
+            return lastEditorOpenedAt;
+        }
+
+        internal static long CurrentEditorOpenedAt(DTE dte) => EditorOpenedAt(dte);
+
+        private static string CurrentEditorKey(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                var path = dte.ActiveDocument?.FullName;
+                return string.IsNullOrWhiteSpace(path) ? null : Path.GetFullPath(path);
+            }
+            catch { return null; }
+        }
+
+        private static object DescribeFocus(bool editorOwnsFocus)
         {
             var hwnd = GetFocus();
             if (hwnd == IntPtr.Zero) return new Dictionary<string, object> { ["type"] = "none" };
             var name = new StringBuilder(256); GetClassName(hwnd, name, name.Capacity);
             var result = new Dictionary<string, object>
             {
-                ["type"] = "component", ["className"] = name.ToString(),
+                ["type"] = editorOwnsFocus ? "editor" : "component", ["className"] = name.ToString(),
                 ["nativeHandle"] = unchecked((ulong)hwnd.ToInt64()).ToString()
             };
             if (GetWindowRect(hwnd, out var r)) result["bounds"] = new Dictionary<string, object>
@@ -40,7 +82,26 @@ namespace FastVisualStudioBridge
             return result;
         }
 
-        private static object DescribeEditor(DTE dte, BridgeOptions options)
+        private static bool ActiveEditorOwnsFocus(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                var focus = GetFocus();
+                var editor = dte.ActiveDocument?.ActiveWindow?.HWnd ?? IntPtr.Zero;
+                return focus != IntPtr.Zero && editor != IntPtr.Zero && IsDescendant(focus, editor);
+            }
+            catch { return false; }
+        }
+
+        private static bool IsDescendant(IntPtr child, IntPtr ancestor)
+        {
+            for (var current = child; current != IntPtr.Zero; current = GetParent(current))
+                if (current == ancestor) return true;
+            return false;
+        }
+
+        private static object DescribeEditor(DTE dte, BridgeOptions options, bool ownsFocus)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             Document document;
@@ -59,7 +120,7 @@ namespace FastVisualStudioBridge
             var hasSelection = startOffset != endOffset;
             var editor = new Dictionary<string, object>
             {
-                ["ownsFocus"] = true,
+                ["ownsFocus"] = ownsFocus,
                 ["editable"] = !document.ReadOnly,
                 ["file"] = new Dictionary<string, object>
                 {

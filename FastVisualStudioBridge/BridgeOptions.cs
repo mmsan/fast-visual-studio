@@ -28,6 +28,15 @@ namespace FastVisualStudioBridge
         [Category("隐私"), DisplayName("编辑器上下文字符数"), DefaultValue(200)]
         public int ContextCharacters { get; set; } = 200;
 
+        [Category("更新"), DisplayName("自动更新"), DefaultValue(true)]
+        public bool AutoUpdate { get; set; } = true;
+
+        [Category("更新"), DisplayName("更新源"), DefaultValue("http://127.0.0.1:8800/vs-extensions/AtomFeed.xml")]
+        public string UpdateFeedUrl { get; set; } = "http://127.0.0.1:8800/vs-extensions/AtomFeed.xml";
+
+        [Category("更新"), DisplayName("检查间隔（分钟）"), DefaultValue(30)]
+        public int UpdateCheckMinutes { get; set; } = 30;
+
         internal string WebSocketUrl
         {
             get
@@ -40,8 +49,10 @@ namespace FastVisualStudioBridge
         protected override void OnApply(PageApplyEventArgs e)
         {
             ContextCharacters = System.Math.Max(0, System.Math.Min(5000, ContextCharacters));
+            UpdateCheckMinutes = System.Math.Max(5, System.Math.Min(1440, UpdateCheckMinutes));
             base.OnApply(e);
             FastBridgePackage.Instance?.Bridge?.SettingsChanged();
+            FastBridgePackage.Instance?.Updater?.SettingsChanged();
         }
     }
 }

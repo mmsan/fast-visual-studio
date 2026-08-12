@@ -5,6 +5,9 @@ using System.ComponentModel.Design;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.VisualStudio.ComponentModelHost;
+using Microsoft.VisualStudio.Editor;
+using Microsoft.VisualStudio.TextManager.Interop;
 
 namespace FastVisualStudioBridge
 {
@@ -21,19 +24,26 @@ namespace FastVisualStudioBridge
         public const string SolutionExistsContext = "{f1536ef8-92ec-443c-9ed7-fdadf150da82}";
         internal static FastBridgePackage Instance { get; private set; }
         internal BridgeService Bridge { get; private set; }
+        internal LocalUpdateService Updater { get; private set; }
 
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
             await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
             Instance = this;
             var dte = (DTE)await GetServiceAsync(typeof(DTE));
-            Bridge = new BridgeService(this, dte, (BridgeOptions)GetDialogPage(typeof(BridgeOptions)));
+            var textManager = (IVsTextManager)await GetServiceAsync(typeof(SVsTextManager));
+            var componentModel = (IComponentModel)await GetServiceAsync(typeof(SComponentModel));
+            var editorAdapters = componentModel?.GetService<IVsEditorAdaptersFactoryService>();
+            var options = (BridgeOptions)GetDialogPage(typeof(BridgeOptions));
+            Bridge = new BridgeService(this, dte, options, textManager, editorAdapters);
             Bridge.Start();
+            Updater = new LocalUpdateService(options);
+            Updater.Start();
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) Bridge?.Dispose();
+            if (disposing) { Updater?.Dispose(); Bridge?.Dispose(); }
             Instance = null;
             base.Dispose(disposing);
         }
