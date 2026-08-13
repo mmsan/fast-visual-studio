@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace FastVisualStudioBridge
 {
@@ -118,6 +119,8 @@ namespace FastVisualStudioBridge
             var startOffset = Math.Max(0, Math.Min(point.AbsoluteCharOffset, anchor.AbsoluteCharOffset) - 1);
             var endOffset = Math.Max(startOffset, Math.Max(point.AbsoluteCharOffset, anchor.AbsoluteCharOffset) - 1);
             var hasSelection = startOffset != endOffset;
+            string allText = null;
+            try { allText = text.StartPoint.CreateEditPoint().GetText(text.EndPoint); } catch { }
             var editor = new Dictionary<string, object>
             {
                 ["ownsFocus"] = ownsFocus,
@@ -148,11 +151,17 @@ namespace FastVisualStudioBridge
                 }}
             };
             if (project != null) editor["project"] = project.ToDictionary();
+            editor["context"] = SyntaxContextAt(allText ?? string.Empty, offset, Path.GetExtension(path));
+            var expression = ExtractExpression(allText ?? string.Empty, offset);
+            if (!string.IsNullOrWhiteSpace(expression)) editor["expressionContext"] = new Dictionary<string, object>
+            {
+                ["expression"] = expression, ["kind"] = "reference"
+            };
             if (options.SendText)
             {
                 try
                 {
-                    var all = text.StartPoint.CreateEditPoint().GetText(text.EndPoint);
+                    var all = allText ?? string.Empty;
                     var n = Math.Max(0, Math.Min(5000, options.ContextCharacters));
                     var safe = Math.Min(offset, all.Length);
                     var lines = all.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
@@ -167,5 +176,75 @@ namespace FastVisualStudioBridge
             }
             return editor;
         }
+
+        private static string SyntaxContextAt(string text, int offset, string extension)
+        {
+            var stack = new Stack<string>();
+            var quote = '\0';
+            var escaped = false;
+            var lineComment = false;
+            var blockComment = false;
+            var safe = Math.Max(0, Math.Min(offset, text.Length));
+            for (var index = 0; index < safe; index++)
+            {
+                var current = text[index];
+                var next = index + 1 < text.Length ? text[index + 1] : '\0';
+                if (lineComment) { if (current == '\n') lineComment = false; continue; }
+                if (blockComment) { if (current == '*' && next == '/') { blockComment = false; index++; } continue; }
+                if (quote != '\0')
+                {
+                    if (escaped) { escaped = false; continue; }
+                    if (current == '\\') { escaped = true; continue; }
+                    if (current == quote) quote = '\0';
+                    continue;
+                }
+                if (current == '/' && next == '/') { lineComment = true; index++; continue; }
+                if (current == '/' && next == '*') { blockComment = true; index++; continue; }
+                if (current == '#') { lineComment = true; continue; }
+                if (current == '\'' || current == '"' || current == '`') { quote = current; continue; }
+                if (current == '{') stack.Push(IsObjectBrace(text, index, extension) ? "braces" : "block");
+                else if (current == '(') stack.Push("parentheses");
+                else if (current == '[') stack.Push("bracket");
+                else if (current == '}' || current == ')' || current == ']') if (stack.Count > 0) stack.Pop();
+            }
+            if (quote == '\'') return "singleQuote";
+            if (quote == '"') return "doubleQuote";
+            if (quote == '`') return "backtick";
+            var currentContext = stack.Count == 0 ? "none" : stack.Peek();
+            return currentContext == "braces" || currentContext == "parentheses" ? currentContext : "none";
+        }
+
+        private static bool IsObjectBrace(string text, int index, string extension)
+        {
+            if (string.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase)) return true;
+            var start = Math.Max(0, index - 16);
+            var before = text.Substring(start, index - start).TrimEnd();
+            if (Regex.IsMatch(before, @"\b(if|for|foreach|while|switch|catch|try|finally|class|struct|namespace|function)\s*[^{}]*$")) return false;
+            return before.EndsWith("=") || before.EndsWith(":") || before.EndsWith(",") || before.EndsWith("(") || before.EndsWith("[") || before.EndsWith("=>");
+        }
+
+        private static string ExtractExpression(string text, int offset)
+        {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
+            var cursor = Math.Max(0, Math.Min(offset, text.Length));
+            var start = cursor;
+            while (start > 0 && IsIdentifierPart(text[start - 1])) start--;
+            var end = cursor;
+            while (end < text.Length && IsIdentifierPart(text[end])) end++;
+            while (start > 0)
+            {
+                var index = start - 1;
+                while (index >= 0 && char.IsWhiteSpace(text[index])) index--;
+                if (index < 0 || text[index] != '.') break;
+                index--;
+                while (index >= 0 && char.IsWhiteSpace(text[index])) index--;
+                while (index >= 0 && IsIdentifierPart(text[index])) index--;
+                start = index + 1;
+            }
+            var value = text.Substring(start, end - start).Replace(" ", string.Empty);
+            return Regex.IsMatch(value, @"^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)*\.?$") ? value : string.Empty;
+        }
+
+        private static bool IsIdentifierPart(char value) => char.IsLetterOrDigit(value) || value == '_' || value == '$';
     }
 }

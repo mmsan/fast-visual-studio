@@ -16,7 +16,7 @@
 
 ## 身份
 
-`bridge.hello.payload.client` 为 `fast-visual-studio-bridge`。握手包含安装 ID、进程实例 ID、连接 ID、Visual Studio 版本、进程 ID、当前进程拥有的全部可见顶层窗口句柄、当前解决方案/项目以及能力列表。每条消息的 `source` 都包含同样的实例身份、当前项目身份和最新 `nativeWindows`，以便浮动编辑器窗口创建、关闭或激活后刷新句柄列表。
+`bridge.hello.payload.client` 为 `fast-visual-studio-bridge`。握手包含进程实例 ID、连接 ID、进程 ID、当前进程拥有的顶层窗口句柄、当前解决方案/项目以及能力列表。每条消息的 `source` 都包含实例身份、当前项目身份和最新的精简 `nativeWindows`，以便浮动编辑器窗口创建、关闭或激活后刷新句柄列表；窗口条目只保留句柄。
 
 ## 事件
 
@@ -41,6 +41,11 @@
 - `command.requestFocus`
 - `command.fullScreen`
 - `command.copyResourcePath`
+- `command.queryPythonPackages`
+
+`payload.activeEditor` also carries generic editor context when the host can determine it: `context` is one of `singleQuote`, `doubleQuote`, `backtick`, `braces`, `parentheses`, or `none`; `expressionContext` may contain `expression` and a best-effort `kind`, `type`, and up to 15 `members`. Visual Studio's public DTE surface does not expose a stable general-purpose type/member language service, so unresolved type and member fields are omitted rather than guessed.
+
+`command.queryPythonPackages` accepts `payload.packages` as a batch of import names or `{ "importName", "distributionName" }` objects and queries only the targeted project's configured interpreter. The result includes `interpreter`, `version`, `environmentType`, and a `packages` map.
 
 `bridge.hello.payload` 和状态快照包含 `editorOpenedAt`，表示当前编辑器或活动文档打开时间的 Unix 毫秒时间戳；握手 payload 还包含 `fullScreen` 和 `activeProject`。总服务只在握手时执行一次自动全屏判断；打开时间超过 30 秒或缺少字段时跳过，后续选中文件、光标和文档事件不会触发自动全屏。
 

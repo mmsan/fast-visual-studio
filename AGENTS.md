@@ -10,7 +10,7 @@ Fast Visual Studio Bridge is a Visual Studio VSIX that mirrors the Fast editor-b
 - Handshake client: `fast-visual-studio-bridge` — keep it stable.
 - Target: Visual Studio 2022 (17.x) and 2026 (18.x), .NET Framework 4.7.2.
 
-Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `SnapshotCollector.cs` (editor state), `BridgeCommands.cs` (identity/commands/path safety), `BridgeOptions.cs` (settings), `LocalUpdateService.cs` (loopback updater), and the protocol/release files.
+Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `BridgeLog.cs` (ActivityLog and rolling plugin logs), `SnapshotCollector.cs` (editor state), `BridgeCommands.cs` (identity/commands/path safety), `BridgeOptions.cs` (settings), `LocalUpdateService.cs` (loopback updater), and the protocol/release files.
 
 ## Runtime, safety, and compatibility
 
@@ -18,15 +18,21 @@ Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `SnapshotCollector.cs` (
 - Mutating commands, including `command.copyResourcePath`, require `target.instanceId` and ignore other instances. The copy command handles only one selected file/directory in a focused Solution Explorer; otherwise return `data.handled: false`.
 - Restrict navigation to roots in the open solution/projects. Keep DTE access on the Visual Studio UI thread.
 - Never log source text or bearer tokens. Keep additions backward compatible with protocol version 1.
+- Keep bridge diagnostics concise, throttle repeated connection failures, and delete plugin log files older than three days.
+
+## Plugin log locations (on demand)
+
+- Host log: `%APPDATA%\Microsoft\VisualStudio\<instance>\ActivityLog.xml`.
+- Plugin log: the newest `%LOCALAPPDATA%\Mirror\FastVisualStudioBridge\Logs\fast-visual-studio-bridge-YYYY-MM-DD.log`.
 
 ## Fast-side synchronization
 
-The Node.js service is in `D:\v\fast`: `utils/socket-browser.js` (server), `utils/visual-studio-socket.js` (adapter), and `utils/f.mjs` (navigation routing). Any handshake, identity, event, command, or payload change must update the adapter, IntelliJ/VS Code counterparts, affected protocol docs, and README examples. Preserve routing, targeting, path safety, text-sharing, reconnect, and disposal behavior.
+The Node.js service is in `D:\v\fast`: `utils/socket-browser.js` (server), `utils/socket-visual-studio.js` (adapter), and `utils/f.mjs` (navigation routing). Any handshake, identity, event, command, or payload change must update the adapter, IntelliJ/VS Code counterparts, affected protocol docs, and README examples. Preserve routing, targeting, path safety, text-sharing, reconnect, and disposal behavior.
 
 Run after Node-side changes:
 
 ```powershell
-node --check D:\v\fast\utils\visual-studio-socket.js
+node --check D:\v\fast\utils\socket-visual-studio.js
 node --check D:\v\fast\utils\socket-browser.js
 node --check D:\v\fast\utils\f.mjs
 ```

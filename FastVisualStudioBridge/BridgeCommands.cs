@@ -13,6 +13,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
 using System.Reflection;
+using System.Threading.Tasks;
 
 namespace FastVisualStudioBridge
 {
@@ -34,11 +35,6 @@ namespace FastVisualStudioBridge
         private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr parameter);
         [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextLength(IntPtr hwnd);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
-        [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
-        [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; }
         [StructLayout(LayoutKind.Sequential)] private struct GuiThreadInfo
         {
             public int Size;
@@ -58,31 +54,29 @@ namespace FastVisualStudioBridge
             { ["projectId"] = Id, ["name"] = Name, ["basePath"] = BasePath };
         }
 
-        internal static object Identity(DTE dte, string installationId, string instanceId, string connectionId)
+        internal static object Identity(DTE dte, string instanceId, string connectionId)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             return new Dictionary<string, object>
             {
-                ["client"] = "fast-visual-studio-bridge", ["clientId"] = installationId,
-                ["installationId"] = installationId, ["instanceId"] = instanceId, ["connectionId"] = connectionId,
-                ["ide"] = "Microsoft Visual Studio", ["build"] = dte.Version,
-                ["pluginVersion"] = Assembly.GetExecutingAssembly().GetName().Version.ToString(3),
+                ["client"] = "fast-visual-studio-bridge",
+                ["instanceId"] = instanceId, ["connectionId"] = connectionId,
                 ["projects"] = Projects(dte).Select(p => p.ToDictionary()).ToList(),
                 ["processId"] = System.Diagnostics.Process.GetCurrentProcess().Id,
                 ["nativeWindows"] = NativeWindows(dte),
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "navigate", "select", "find", "requestFocus", "fullScreen", "listProjects", "copyResourcePath" }
+                ["capabilities"] = new[] { "state", "navigate", "select", "find", "requestFocus", "fullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
             };
         }
 
-        internal static object Source(DTE dte, string installationId, string instanceId, string connectionId, object payload)
+        internal static object Source(DTE dte, string instanceId, string connectionId, object payload)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             var source = new Dictionary<string, object>
             {
-                ["installationId"] = installationId, ["instanceId"] = instanceId, ["connectionId"] = connectionId,
+                ["instanceId"] = instanceId, ["connectionId"] = connectionId,
                 ["projects"] = Projects(dte).Select(p => p.ToDictionary()).ToList()
             };
             source["nativeWindows"] = NativeWindows(dte);
@@ -110,44 +104,23 @@ namespace FastVisualStudioBridge
                 GetWindowThreadProcessId(hwnd, out var ownerProcessId);
                 if (ownerProcessId != processId || !IsWindowVisible(hwnd)) return true;
                 seen.Add(hwnd);
-                windows.Add(DescribeNativeWindow(hwnd, foreground));
+                windows.Add(DescribeNativeWindow(hwnd));
                 return true;
             }, IntPtr.Zero);
 
             if (mainWindow != IntPtr.Zero && !seen.Contains(mainWindow))
-                windows.Add(DescribeNativeWindow(mainWindow, foreground, dte.MainWindow.Caption));
+                windows.Add(DescribeNativeWindow(mainWindow));
 
             return new Dictionary<string, object>
             {
-                ["supported"] = true,
                 ["activeWindowHandle"] = foreground == IntPtr.Zero ? null : UnsignedHandle(foreground),
-                ["windows"] = windows,
-                ["format"] = "unsigned decimal string; all visible top-level windows owned by this devenv process"
+                ["windows"] = windows
             };
         }
 
-        private static IDictionary<string, object> DescribeNativeWindow(IntPtr hwnd, IntPtr foreground, string fallbackTitle = null)
+        private static IDictionary<string, object> DescribeNativeWindow(IntPtr hwnd)
         {
-            var titleLength = Math.Max(0, GetWindowTextLength(hwnd));
-            var title = new StringBuilder(titleLength + 1);
-            GetWindowText(hwnd, title, title.Capacity);
-            var className = new StringBuilder(256);
-            GetClassName(hwnd, className, className.Capacity);
-            var value = new Dictionary<string, object>
-            {
-                ["handle"] = UnsignedHandle(hwnd),
-                ["handleHex"] = "0x" + unchecked((ulong)hwnd.ToInt64()).ToString("X"),
-                ["active"] = hwnd == foreground,
-                ["className"] = className.ToString(),
-                ["title"] = title.Length == 0 ? fallbackTitle : title.ToString()
-            };
-            if (GetWindowRect(hwnd, out var rect)) value["bounds"] = new Dictionary<string, object>
-            {
-                ["x"] = rect.Left, ["y"] = rect.Top,
-                ["width"] = Math.Max(0, rect.Right - rect.Left),
-                ["height"] = Math.Max(0, rect.Bottom - rect.Top)
-            };
-            return value;
+            return new Dictionary<string, object> { ["handle"] = UnsignedHandle(hwnd) };
         }
 
         private static string UnsignedHandle(IntPtr hwnd) => unchecked((ulong)hwnd.ToInt64()).ToString();
@@ -161,7 +134,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -183,11 +156,13 @@ namespace FastVisualStudioBridge
                             case "command.requestFocus": data = RequestFocus(dte); break;
                             case "command.fullScreen": data = FullScreen(dte); break;
                             case "command.copyResourcePath": data = CopyResourcePath(dte); break;
+                            case "command.queryPythonPackages": data = await QueryPythonPackages(dte, payload, target); break;
                             default: await bridge.SendAsync("command.result", Error(type, "UNKNOWN_COMMAND", "Unsupported command: " + type), commandId); return;
                         }
                         await bridge.SendAsync("command.result", Success(type, data), commandId);
                     }
                     catch (CommandException ex) { await bridge.SendAsync("command.result", Error(type, ex.Code, ex.Message), commandId); }
+                    catch (Exception ex) when (type == "command.queryPythonPackages") { await bridge.SendAsync("command.result", Error(type, "PYTHON_QUERY_FAILED", ex.Message), commandId); }
                     catch (FileNotFoundException ex) { await bridge.SendAsync("command.result", Error(type, type == "command.find" ? "FIND_FAILED" : "NAVIGATION_FAILED", ex.Message), commandId); }
                     catch (ArgumentException ex) when (type == "command.find" && (bool?)payload["regex"] == true) { await bridge.SendAsync("command.result", Error(type, "INVALID_QUERY", ex.Message), commandId); }
                     catch (Exception ex) { await bridge.SendAsync("command.result", Error(type, type == "command.find" ? "FIND_FAILED" : type.StartsWith("command.") ? "NAVIGATION_FAILED" : "INVALID_MESSAGE", ex.Message), commandId); }
@@ -219,6 +194,112 @@ namespace FastVisualStudioBridge
             }
             FocusMainWindow(dte);
             return new Dictionary<string, object> { ["path"] = resolved.path, ["line"] = selection.ActivePoint.Line - 1, ["column"] = selection.ActivePoint.LineCharOffset - 1 };
+        }
+
+        private const string PythonPackageQuery =
+            "import importlib.util,importlib.metadata,json,os,sys\n" +
+            "items={}\n" +
+            "for import_name,distribution_name in json.load(sys.stdin):\n" +
+            " installed=False\n" +
+            " version=None\n" +
+            " try: installed=importlib.util.find_spec(import_name) is not None\n" +
+            " except (ImportError,ModuleNotFoundError,ValueError): pass\n" +
+            " try: version=importlib.metadata.version(distribution_name); installed=True\n" +
+            " except importlib.metadata.PackageNotFoundError: pass\n" +
+            " items[import_name]={'installed':installed,**({'version':version} if version else {})}\n" +
+            " environment_type='conda' if os.environ.get('CONDA_PREFIX') else ('venv' if sys.prefix != getattr(sys,'base_prefix',sys.prefix) else 'system')\n" +
+            " print(json.dumps({'interpreter':sys.executable,'version':'.'.join(str(part) for part in sys.version_info[:3]),'environmentType':environment_type,'packages':items}))";
+
+        private static Task<object> QueryPythonPackages(DTE dte, JObject payload, JObject target)
+        {
+            var requested = payload["packages"] as JArray;
+            var packages = new List<Tuple<string, string>>();
+            if (requested != null)
+            {
+                foreach (var item in requested)
+                {
+                    var importName = item.Type == JTokenType.String ? (string)item : (string)item["importName"];
+                    var distributionName = item.Type == JTokenType.String ? importName : (string)item["distributionName"] ?? importName;
+                    if (string.IsNullOrWhiteSpace(importName) || string.IsNullOrWhiteSpace(distributionName)
+                        || !Regex.IsMatch(importName, @"^[A-Za-z_][A-Za-z0-9_.-]*$")
+                        || !Regex.IsMatch(distributionName, @"^[A-Za-z_][A-Za-z0-9_.-]*$")
+                        || packages.Any(value => value.Item1 == importName)) continue;
+                    packages.Add(Tuple.Create(importName, distributionName));
+                }
+            }
+            if (packages.Count == 0) throw new CommandException("INVALID_QUERY", "payload.packages must contain at least one package name");
+
+            var project = ResolveProjectForQuery(dte, target);
+            var interpreter = FindPythonInterpreter(dte, project);
+            if (interpreter == null) throw new CommandException("PYTHON_INTERPRETER_NOT_FOUND", "The targeted project has no configured Python interpreter");
+            var json = Newtonsoft.Json.JsonConvert.SerializeObject(packages.Select(value => new[] { value.Item1, value.Item2 }));
+            return Task.Run<object>(() => RunPythonQuery(interpreter, project?.BasePath, json));
+        }
+
+        private static ProjectInfo ResolveProjectForQuery(DTE dte, JObject target)
+        {
+            var requestedId = (string)target["projectId"];
+            var requestedBase = (string)target["projectBasePath"];
+            var projects = Projects(dte);
+            var selected = projects.FirstOrDefault(project =>
+                (string.IsNullOrWhiteSpace(requestedId) || project.Id == requestedId) &&
+                (string.IsNullOrWhiteSpace(requestedBase) || string.Equals(Path.GetFullPath(project.BasePath), Path.GetFullPath(requestedBase), StringComparison.OrdinalIgnoreCase)));
+            if (selected != null) return selected;
+            return ProjectForFile(dte, dte.ActiveDocument?.FullName);
+        }
+
+        private static string FindPythonInterpreter(DTE dte, ProjectInfo project)
+        {
+            var containingProject = dte.ActiveDocument?.ProjectItem?.ContainingProject;
+            foreach (var propertyName in new[] { "PythonInterpreterPath", "InterpreterPath", "PythonPath" })
+            {
+                try
+                {
+                    var value = containingProject?.Properties?.Item(propertyName)?.Value?.ToString();
+                    if (!string.IsNullOrWhiteSpace(value) && File.Exists(value)) return value;
+                }
+                catch { }
+            }
+            if (project == null) return null;
+            foreach (var candidate in new[]
+            {
+                Path.Combine(project.BasePath, ".venv", "Scripts", "python.exe"),
+                Path.Combine(project.BasePath, "venv", "Scripts", "python.exe"),
+                Path.Combine(project.BasePath, ".venv", "bin", "python"),
+                Path.Combine(project.BasePath, "venv", "bin", "python")
+            }) if (File.Exists(candidate)) return candidate;
+            return null;
+        }
+
+        private static JObject RunPythonQuery(string interpreter, string workingDirectory, string packageJson)
+        {
+            var encodedQuery = Convert.ToBase64String(Encoding.UTF8.GetBytes(PythonPackageQuery));
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = interpreter,
+                Arguments = "-c \"import base64;exec(base64.b64decode('" + encodedQuery + "'))\"",
+                WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory) ? Environment.CurrentDirectory : workingDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (var process = new System.Diagnostics.Process { StartInfo = startInfo })
+            {
+                if (!process.Start()) throw new InvalidOperationException("Unable to start the configured Python interpreter");
+                process.StandardInput.Write(packageJson);
+                process.StandardInput.Close();
+                var output = process.StandardOutput.ReadToEnd();
+                process.StandardError.ReadToEnd();
+                if (!process.WaitForExit(5000))
+                {
+                    try { process.Kill(); } catch { }
+                    throw new TimeoutException("Python package query timed out");
+                }
+                if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output)) throw new InvalidOperationException("Python interpreter returned no package result");
+                return JObject.Parse(output.Trim());
+            }
         }
 
         private static object Find(DTE dte, JObject payload, JObject target)

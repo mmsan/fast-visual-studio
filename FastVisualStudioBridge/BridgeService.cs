@@ -25,12 +25,12 @@ namespace FastVisualStudioBridge
         private readonly CancellationTokenSource lifetime = new CancellationTokenSource();
         private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
         private readonly string instanceId = Guid.NewGuid().ToString();
-        private readonly string installationId;
         private ClientWebSocket socket;
         private CancellationTokenSource connection;
         private Task runner;
         private long sequence;
         private string connectionId = Guid.NewGuid().ToString();
+        private int connectionFailures;
         private TextEditorEvents textEvents;
         private WindowEvents windowEvents;
         private SolutionEvents solutionEvents;
@@ -48,24 +48,6 @@ namespace FastVisualStudioBridge
             this.options = options;
             this.textManager = textManager;
             this.editorAdapters = editorAdapters;
-            installationId = LoadInstallationId();
-        }
-
-        private static string LoadInstallationId()
-        {
-            const string key = @"Software\Mirror\FastVisualStudioBridge";
-            try
-            {
-                using (var registryKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(key))
-                {
-                    var value = registryKey.GetValue("InstallationId") as string;
-                    if (!string.IsNullOrWhiteSpace(value)) return value;
-                    value = Guid.NewGuid().ToString();
-                    registryKey.SetValue("InstallationId", value);
-                    return value;
-                }
-            }
-            catch { return Guid.NewGuid().ToString(); }
         }
 
         internal void Start()
@@ -83,11 +65,13 @@ namespace FastVisualStudioBridge
             documentEvents.DocumentOpened += OnDocumentOpened;
             documentEvents.DocumentSaved += OnDocumentSaved;
             AttachActiveTextView();
+            BridgeLog.Information("service started; autoConnect=" + options.AutoConnect);
             if (options.AutoConnect) runner = Task.Run(() => ConnectionLoopAsync(lifetime.Token));
         }
 
         internal void SettingsChanged()
         {
+            BridgeLog.Information("settings changed; reconnecting");
             connection?.Cancel();
             socket?.Abort();
             if (options.AutoConnect && (runner == null || runner.IsCompleted)) runner = Task.Run(() => ConnectionLoopAsync(lifetime.Token));
@@ -172,6 +156,7 @@ namespace FastVisualStudioBridge
             {
                 connection = CancellationTokenSource.CreateLinkedTokenSource(stop);
                 var token = connection.Token;
+                var connected = false;
                 try
                 {
                     var ws = new ClientWebSocket();
@@ -184,25 +169,41 @@ namespace FastVisualStudioBridge
                         await ws.ConnectAsync(new Uri(options.WebSocketUrl), timeout.Token).ConfigureAwait(false);
                     }
                     socket = ws;
+                    connected = true;
                     connectionId = Guid.NewGuid().ToString();
                     attempt = 0;
+                    var failures = connectionFailures;
+                    connectionFailures = 0;
+                    BridgeLog.Information("connected" + (failures > 0 ? "; recoveredAfterFailures=" + failures : ""));
                     await package.JoinableTaskFactory.RunAsync(async () =>
                     {
                         await package.JoinableTaskFactory.SwitchToMainThreadAsync();
-                        await SendAsync("bridge.hello", BridgeCommands.Identity(dte, installationId, instanceId, connectionId), null).ConfigureAwait(false);
+                        await SendAsync("bridge.hello", BridgeCommands.Identity(dte, instanceId, connectionId), null).ConfigureAwait(false);
                         await SendAsync("editor.state", SnapshotCollector.Collect(dte, options), null).ConfigureAwait(false);
                     });
                     await ReceiveLoopAsync(ws, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { }
-                catch (Exception) { }
+                catch (Exception error)
+                {
+                    var failures = ++connectionFailures;
+                    if (failures <= 3 || failures % 10 == 0)
+                        BridgeLog.Warning("connection failed; attempt=" + failures, error);
+                }
                 finally
                 {
                     var old = socket; socket = null;
                     old?.Dispose(); connection?.Dispose(); connection = null;
                 }
+                if (connected && !stop.IsCancellationRequested && options.AutoConnect)
+                    BridgeLog.Information("connection closed; retrying");
                 if (!stop.IsCancellationRequested && options.AutoConnect)
-                    await Task.Delay(delays[Math.Min(attempt++, delays.Length - 1)], stop).ConfigureAwait(false);
+                {
+                    var delay = delays[Math.Min(attempt++, delays.Length - 1)];
+                    if (attempt <= 3 || attempt % 10 == 0)
+                        BridgeLog.Information("reconnect scheduled; delayMs=" + delay);
+                    await Task.Delay(delay, stop).ConfigureAwait(false);
+                }
             }
         }
 
@@ -234,19 +235,20 @@ namespace FastVisualStudioBridge
                 ["version"] = 1, ["id"] = Guid.NewGuid().ToString(), ["type"] = type,
                 ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 ["sequence"] = Interlocked.Increment(ref sequence), ["payload"] = payload,
-                ["source"] = BridgeCommands.Source(dte, installationId, instanceId, connectionId, payload)
+                ["source"] = BridgeCommands.Source(dte, instanceId, connectionId, payload)
             };
             if (replyTo != null) message["replyTo"] = replyTo;
             var bytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(message, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore }));
             await sendLock.WaitAsync().ConfigureAwait(false);
             try { if (ws.State == WebSocketState.Open) await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, lifetime.Token).ConfigureAwait(false); }
-            catch { }
+            catch (Exception error) { BridgeLog.Warning("message send failed; type=" + type, error); }
             finally { sendLock.Release(); }
         }
 
         public void Dispose()
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            BridgeLog.Information("service disposed");
             lifetime.Cancel(); connection?.Cancel(); debounce?.Dispose(); socket?.Abort();
             if (textEvents != null) textEvents.LineChanged -= OnLineChanged;
             if (windowEvents != null) windowEvents.WindowActivated -= OnWindowActivated;
