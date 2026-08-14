@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [ValidateSet('Official', 'Local')]
+    [string]$UpdateChannel = 'Official'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,7 +33,7 @@ $msbuildCandidates += @(
 $msbuild = $msbuildCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $msbuild) { throw 'Visual Studio MSBuild was not found. Install the Visual Studio extension development workload.' }
 
-& $msbuild $solution /t:Rebuild "/p:Configuration=$Configuration" /m /v:minimal
+& $msbuild $solution /t:Rebuild "/p:Configuration=$Configuration" "/p:FastUpdateChannel=$UpdateChannel" /m /v:minimal
 if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
 
 $builtVsix = Join-Path $projectRoot "FastVisualStudioBridge\bin\$Configuration\net472\FastVisualStudioBridge.vsix"
@@ -45,6 +47,7 @@ Copy-Item -LiteralPath $builtVsix -Destination $vsix -Force
 $item = Get-Item -LiteralPath $vsix
 $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $vsix
 Write-Host "VSIX_VERSION=$version"
+Write-Host "VSIX_UPDATE_CHANNEL=$UpdateChannel"
 Write-Host "VSIX_PATH=$($item.FullName)"
 Write-Host "VSIX_SIZE=$($item.Length)"
 Write-Host "VSIX_SHA256=$($hash.Hash)"

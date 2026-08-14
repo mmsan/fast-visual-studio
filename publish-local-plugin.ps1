@@ -27,7 +27,7 @@ try {
         [System.IO.File]::WriteAllText($assemblyInfoPath, $newAssemblyInfo, [System.Text.UTF8Encoding]::new($false))
     }
 
-    & (Join-Path $projectRoot 'build-plugin.ps1') -Configuration Release
+    & (Join-Path $projectRoot 'build-plugin.ps1') -Configuration Release -UpdateChannel Local
     if ($LASTEXITCODE -ne 0) { throw "VSIX build failed with exit code $LASTEXITCODE" }
 
     $vsix = Join-Path $projectRoot 'dist\FastVisualStudioBridge.vsix'

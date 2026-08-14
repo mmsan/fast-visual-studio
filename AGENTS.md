@@ -15,7 +15,7 @@ Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `BridgeLog.cs` (Activity
 ## Runtime, safety, and compatibility
 
 - Default endpoint is `ws://127.0.0.1:19900`; host, port, path, bearer token, auto-connect, text sharing, and context length remain configurable.
-- Mutating commands, including `command.copyResourcePath`, require `target.instanceId` and ignore other instances. The copy command handles only one selected file/directory in a focused Solution Explorer; otherwise return `data.handled: false`.
+- Mutating commands, including `command.copyResourcePath`, require `target.instanceId` and ignore other instances. The copy command handles one or more selected files/directories in a focused Solution Explorer, returns all absolute paths in `data.paths`, and retains `data.path` for a single selection.
 - Restrict navigation to roots in the open solution/projects. Keep DTE access on the Visual Studio UI thread.
 - Never log source text or bearer tokens. Keep additions backward compatible with protocol version 1.
 - Keep bridge diagnostics concise, throttle repeated connection failures, and delete plugin log files older than three days.
@@ -47,7 +47,7 @@ Use the wrapper for a distributable package:
 .\build-plugin.cmd
 ```
 
-It uses full-framework Visual Studio MSBuild, performs a Release rebuild, verifies the VSSDK VSIX, copies `dist/FastVisualStudioBridge.vsix`, and prints version, absolute path, size, and SHA-256. VSSDK packaging is not reliably compatible with .NET Core MSBuild. `dist` is generated and must remain Git-ignored.
+It uses full-framework Visual Studio MSBuild and defaults to `-UpdateChannel Official`, which disables the built-in loopback updater. It copies the verified VSIX to `dist/FastVisualStudioBridge.vsix`. Use only `Official` or `Local`; `dist` remains Git-ignored.
 
 ## Local update publishing
 
@@ -62,6 +62,8 @@ Publish with:
 ```powershell
 .\publish-local-plugin.cmd
 ```
+
+This wrapper must build with `-UpdateChannel Local`; never upload that artifact to the official Marketplace. Official builds use the default `Official` channel and rely on Visual Studio for updates.
 
 The workflow must:
 
@@ -78,7 +80,7 @@ For a coordinated release, use the highest current version across IDEA, Visual S
 
 Users add the feed under **Tools | Options | Environment | Extensions | Additional Extension Galleries**, enable automatic checks/installation, and restart Visual Studio when the update becomes active.
 
-Community may lack custom galleries, so preserve the built-in updater: it checks the loopback feed after startup and at a configurable interval (default 30 minutes, minimum 5), accepts only the stable ID and newer version, requires loopback feed/package URLs, downloads under `%LocalAppData%\Mirror\FastVisualStudioBridge\Updates`, and waits for `devenv` to exit before running `VSIXInstaller.exe /quiet`. Never execute feed-supplied commands or weaken the loopback restriction.
+Community may lack custom galleries, so preserve the built-in updater: it checks the loopback feed about 10 seconds after startup and at a configurable interval (default and minimum 1 minute), accepts only the stable ID and newer version, requires loopback feed/package URLs, downloads under `%LocalAppData%\Mirror\FastVisualStudioBridge\Updates`, and waits for all `devenv` processes to exit before removing older copies with the same stable ID and running `VSIXInstaller.exe /quiet`. Never execute feed-supplied commands or weaken the loopback restriction.
 
 ## Change discipline
 

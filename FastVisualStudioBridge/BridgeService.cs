@@ -178,8 +178,10 @@ namespace FastVisualStudioBridge
                     await package.JoinableTaskFactory.RunAsync(async () =>
                     {
                         await package.JoinableTaskFactory.SwitchToMainThreadAsync();
-                        await SendAsync("bridge.hello", BridgeCommands.Identity(dte, instanceId, connectionId), null).ConfigureAwait(false);
-                        await SendAsync("editor.state", SnapshotCollector.Collect(dte, options), null).ConfigureAwait(false);
+                        var identity = BridgeCommands.Identity(dte, instanceId, connectionId);
+                        var snapshot = SnapshotCollector.Collect(dte, options);
+                        await SendAsync("bridge.hello", identity, null).ConfigureAwait(false);
+                        await SendAsync("editor.state", snapshot, null).ConfigureAwait(false);
                     });
                     await ReceiveLoopAsync(ws, token).ConfigureAwait(false);
                 }

@@ -67,7 +67,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "navigate", "select", "find", "requestFocus", "fullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
+                ["capabilities"] = new[] { "state", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
             };
         }
 
@@ -149,6 +149,7 @@ namespace FastVisualStudioBridge
                         switch (type)
                         {
                             case "command.getState": data = SnapshotCollector.Collect(dte, options); break;
+                            case "command.isFullScreen": data = IsFullScreenState(dte); break;
                             case "command.listProjects": data = Projects(dte).Select(p => p.ToDictionary()).ToList(); break;
                             case "command.navigate": data = Navigate(dte, payload, target, false); break;
                             case "command.select": data = Navigate(dte, payload, target, true); break;
@@ -372,54 +373,73 @@ namespace FastVisualStudioBridge
             if (fullScreen == false)
             {
                 dte.ExecuteCommand("View.FullScreen");
-                fullScreen = true;
+                fullScreen = IsFullScreen(dte);
             }
             return new Dictionary<string, object> { ["fullScreen"] = fullScreen };
         }
 
-        private static object CopyResourcePath(DTE dte)
-        {
-            var path = SelectedSolutionExplorerFile(dte, out var reason);
-            if (path == null)
-                return new Dictionary<string, object> { ["handled"] = false, ["reason"] = reason };
-            return new Dictionary<string, object> { ["handled"] = true, ["path"] = path };
-        }
-
-        private static string SelectedSolutionExplorerFile(DTE dte, out string reason)
+        private static object IsFullScreenState(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            reason = "NO_SINGLE_RESOURCE";
+            return new Dictionary<string, object> { ["fullScreen"] = IsFullScreen(dte) };
+        }
+
+        private static object CopyResourcePath(DTE dte)
+        {
+            var paths = SelectedSolutionExplorerFiles(dte, out var reason);
+            if (paths.Count == 0)
+                return new Dictionary<string, object> { ["handled"] = false, ["reason"] = reason };
+            var result = new Dictionary<string, object> { ["handled"] = true, ["paths"] = paths };
+            if (paths.Count == 1) result["path"] = paths[0];
+            return result;
+        }
+
+        private static List<string> SelectedSolutionExplorerFiles(DTE dte, out string reason)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            reason = "NO_RESOURCE";
             if (!IsSolutionExplorerFocused(dte))
             {
                 reason = "NOT_SOLUTION_EXPLORER_FOCUS";
-                return null;
+                return new List<string>();
             }
-
-            var hierarchyPath = SelectedHierarchyFile();
-            if (!string.IsNullOrWhiteSpace(hierarchyPath)) return hierarchyPath;
 
             try
             {
                 var solutionWindow = dte.Windows.Item(EnvDTE.Constants.vsWindowKindSolutionExplorer);
                 var hierarchy = solutionWindow?.Object as UIHierarchy;
                 var selectedHierarchyItems = hierarchy?.SelectedItems as Array;
-                if (selectedHierarchyItems == null || selectedHierarchyItems.Length != 1) return null;
-
-                var hierarchyItem = selectedHierarchyItems.GetValue(0) as UIHierarchyItem;
-                var projectItem = hierarchyItem?.Object as ProjectItem;
-                if (projectItem == null || projectItem.FileCount != 1) return null;
-                var hierarchyItemPath = projectItem.FileNames[1];
-                var normalizedHierarchyItemPath = ExistingFilePath(hierarchyItemPath);
-                if (normalizedHierarchyItemPath != null) return normalizedHierarchyItemPath;
+                var paths = new List<string>();
+                if (selectedHierarchyItems != null)
+                {
+                    foreach (var selectedItem in selectedHierarchyItems)
+                    {
+                        var projectItem = (selectedItem as UIHierarchyItem)?.Object as ProjectItem;
+                        if (projectItem == null || projectItem.FileCount < 1) continue;
+                        var path = ExistingFilePath(projectItem.FileNames[1]);
+                        if (path != null && !paths.Contains(path, StringComparer.OrdinalIgnoreCase)) paths.Add(path);
+                    }
+                }
+                if (paths.Count > 0) return paths;
 
                 var selected = dte.SelectedItems;
-                if (selected == null || selected.Count != 1) return null;
-                var item = selected.Item(1)?.ProjectItem;
-                if (item == null || item.FileCount != 1) return null;
-                var path = item.FileNames[1];
-                return ExistingFilePath(path);
+                if (selected != null)
+                {
+                    for (var index = 1; index <= selected.Count; index++)
+                    {
+                        var item = selected.Item(index)?.ProjectItem;
+                        if (item == null || item.FileCount < 1) continue;
+                        var path = ExistingFilePath(item.FileNames[1]);
+                        if (path != null && !paths.Contains(path, StringComparer.OrdinalIgnoreCase)) paths.Add(path);
+                    }
+                }
+                if (paths.Count > 0) return paths;
+
+                var hierarchyPath = SelectedHierarchyFile();
+                if (!string.IsNullOrWhiteSpace(hierarchyPath)) paths.Add(hierarchyPath);
+                return paths;
             }
-            catch { return null; }
+            catch { return new List<string>(); }
         }
 
         private static string ExistingFilePath(string path)

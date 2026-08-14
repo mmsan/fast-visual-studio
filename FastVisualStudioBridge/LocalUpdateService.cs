@@ -13,6 +13,11 @@ namespace FastVisualStudioBridge
 {
     internal sealed class LocalUpdateService : IDisposable
     {
+#if FAST_LOCAL_UPDATE
+        private static readonly bool EnabledForBuild = true;
+#else
+        private static readonly bool EnabledForBuild = false;
+#endif
         private const string ExtensionId = "FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F";
         private readonly BridgeOptions options;
         private readonly HttpClient client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
@@ -23,15 +28,28 @@ namespace FastVisualStudioBridge
 
         internal LocalUpdateService(BridgeOptions options) { this.options = options; }
 
-        internal void Start() => ResetTimer(TimeSpan.FromSeconds(10));
-        internal void SettingsChanged() => ResetTimer(TimeSpan.Zero);
+        internal void Start()
+        {
+            if (!EnabledForBuild) return;
+            // Migrate the former default. A loopback-only feed does not need a 30-minute polling delay.
+            if (options.UpdateCheckMinutes == 30)
+            {
+                options.UpdateCheckMinutes = 1;
+                options.SaveSettingsToStorage();
+            }
+            ResetTimer(TimeSpan.FromSeconds(10));
+        }
+        internal void SettingsChanged()
+        {
+            if (EnabledForBuild) ResetTimer(TimeSpan.Zero);
+        }
 
         private void ResetTimer(TimeSpan due)
         {
             if (disposed) return;
             timer?.Dispose();
             if (!options.AutoUpdate) { timer = null; return; }
-            var interval = TimeSpan.FromMinutes(Math.Max(5, Math.Min(1440, options.UpdateCheckMinutes)));
+            var interval = TimeSpan.FromMinutes(Math.Max(1, Math.Min(1440, options.UpdateCheckMinutes)));
             timer = new Timer(_ => CheckForUpdateAsync().Forget(), null, due, interval);
         }
 
@@ -106,32 +124,38 @@ namespace FastVisualStudioBridge
             if (!File.Exists(installer)) throw new FileNotFoundException("VSIXInstaller.exe was not found.", installer);
 
             var helperDirectory = Path.GetDirectoryName(packagePath);
-            var helperPath = Path.Combine(helperDirectory, "install-pending.cmd");
+            var helperPath = Path.Combine(helperDirectory, "install-pending.ps1");
             var logPath = Path.Combine(helperDirectory, "install.log");
-            var lockDirectory = Path.Combine(helperDirectory, "install-pending.lock");
-            var script = "@echo off\r\n" +
-                "setlocal\r\n" +
-                "mkdir \"" + lockDirectory + "\" 2>nul\r\n" +
-                "if errorlevel 1 exit /b 0\r\n" +
-                ":wait\r\n" +
-                "tasklist /FI \"PID eq " + process.Id + "\" /NH | findstr /R /C:\"\\<" + process.Id + "\\>\" >nul\r\n" +
-                "if not errorlevel 1 (\r\n" +
-                "  timeout /t 2 /nobreak >nul\r\n" +
-                "  goto wait\r\n" +
-                ")\r\n" +
-                "echo [%date% %time%] Installing pending VSIX >> \"" + logPath + "\"\r\n" +
-                "\"" + installer + "\" /quiet \"" + packagePath + "\" >> \"" + logPath + "\" 2>&1\r\n" +
-                "set result=%errorlevel%\r\n" +
-                "echo [%date% %time%] VSIXInstaller exit code: %result% >> \"" + logPath + "\"\r\n" +
-                "rmdir \"" + lockDirectory + "\" 2>nul\r\n" +
-                "if not \"%result%\"==\"0\" exit /b %result%\r\n" +
-                "del /q \"" + packagePath + "\" 2>nul\r\n" +
-                "del /q \"" + Path.Combine(helperDirectory, "pending-version.txt") + "\" 2>nul\r\n" +
-                "del \"%~f0\"\r\n";
-            File.WriteAllText(helperPath, script, System.Text.Encoding.ASCII);
-            Process.Start(new ProcessStartInfo("cmd.exe", "/d /c \"\"" + helperPath + "\"\"")
+            var pendingVersionPath = Path.Combine(helperDirectory, "pending-version.txt");
+            var legacyLockDirectory = Path.Combine(helperDirectory, "install-pending.lock");
+            var script =
+                "$ErrorActionPreference = 'Continue'\r\n" +
+                "while (Get-Process -Name devenv -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }\r\n" +
+                "Remove-Item -LiteralPath '" + PowerShellLiteral(legacyLockDirectory) + "' -Recurse -Force -ErrorAction SilentlyContinue\r\n" +
+                "Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Preparing update " + version + "')\r\n" +
+                "for ($i = 0; $i -lt 8; $i++) {\r\n" +
+                "  & '" + PowerShellLiteral(installer) + "' /quiet '/uninstall:" + ExtensionId + "' *>> '" + PowerShellLiteral(logPath) + "'\r\n" +
+                "  $uninstallResult = $LASTEXITCODE\r\n" +
+                "  Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] VSIX uninstall exit code: ' + $uninstallResult)\r\n" +
+                "  if ($uninstallResult -ne 0) { break }\r\n" +
+                "}\r\n" +
+                "$result = -1\r\n" +
+                "for ($attempt = 1; $attempt -le 3; $attempt++) {\r\n" +
+                "  & '" + PowerShellLiteral(installer) + "' /quiet '" + PowerShellLiteral(packagePath) + "' *>> '" + PowerShellLiteral(logPath) + "'\r\n" +
+                "  $result = $LASTEXITCODE\r\n" +
+                "  Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] VSIX install attempt ' + $attempt + ' exit code: ' + $result)\r\n" +
+                "  if ($result -eq 0) { break }\r\n" +
+                "  Start-Sleep -Seconds 3\r\n" +
+                "}\r\n" +
+                "if ($result -ne 0) { exit $result }\r\n" +
+                "Remove-Item -LiteralPath '" + PowerShellLiteral(packagePath) + "' -Force -ErrorAction SilentlyContinue\r\n" +
+                "Remove-Item -LiteralPath '" + PowerShellLiteral(pendingVersionPath) + "' -Force -ErrorAction SilentlyContinue\r\n";
+            File.WriteAllText(helperPath, script, new System.Text.UTF8Encoding(false));
+            Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + helperPath + "\"")
             { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
         }
+
+        private static string PowerShellLiteral(string value) => (value ?? "").Replace("'", "''");
 
         public void Dispose()
         {

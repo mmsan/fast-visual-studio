@@ -34,6 +34,7 @@
 
 - `command.ping`
 - `command.getState`
+- `command.isFullScreen`
 - `command.listProjects`
 - `command.navigate`
 - `command.select`
@@ -51,10 +52,12 @@
 
 会改变 IDE 状态的命令必须携带 `target.instanceId`。可以额外传入 `target.projectId` 或 `target.projectBasePath`。相对路径从目标项目根目录解析，绝对路径也必须位于某个已打开的解决方案/项目根目录中。
 
-当 Visual Studio 的 Solution Explorer（解决方案资源管理器）获得焦点，并且恰好选中一个文件或目录时，`command.copyResourcePath` 返回该资源的绝对路径。多选、非 Solution Explorer 焦点或没有选中文件/目录时，命令成功返回 `data.handled: false`，并可附带 `data.reason` 诊断字段；调用方应继续执行自己的后续逻辑。
+当 Visual Studio 的 Solution Explorer（解决方案资源管理器）获得焦点，并且选中一个或多个文件/目录时，`command.copyResourcePath` 在 `data.paths` 返回全部绝对路径；单选时额外返回兼容字段 `data.path`。非 Solution Explorer 焦点或没有选中文件/目录时，命令成功返回 `data.handled: false`，并可附带 `data.reason` 诊断字段；调用方应继续执行自己的后续逻辑。
 
 响应类型为 `command.result`，并使用 `replyTo` 对应命令 ID。成功正文包含 `success: true`、`command` 和 `data`；失败正文包含 `success: false` 及 `error.code`、`error.message`。
 ## 全屏状态与命令
+
+`command.isFullScreen` 会重新查询当前 Visual Studio 窗口状态并返回 `data.fullScreen`。总服务在自动全屏时先查询状态，只有确认未全屏才发送 `command.fullScreen`，切换后再次查询确认；窗口尚未就绪时会在编辑器启动时间窗口内重试。
 
 每个状态快照都包含 `payload.fullScreen` 布尔值。总服务订阅状态事件时，如果该值不是 `true`，可以发送下面的命令；插件端会把 Visual Studio 设置为全屏，已全屏时不会反复切换。
 

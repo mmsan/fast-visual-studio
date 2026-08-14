@@ -1,15 +1,17 @@
 # Fast Visual Studio Bridge
 
+全屏状态通过 `command.isFullScreen` 查询，返回 `data.fullScreen`；自动全屏会在握手后查询，确认未全屏才发送 `command.fullScreen`，切换后再次查询确认，并在窗口尚未就绪时重试。
+
 这是 `Fast Idea Bridge` 的 Visual Studio 2022 对应插件。它通过本机 WebSocket 服务把 Visual Studio 的当前解决方案、窗口、焦点、活动文件、光标、选择和有限源码上下文发送给 Fast，并接收文件导航命令。
 
 ## 功能
 
 - 默认连接 `ws://127.0.0.1:19900`，断线后按 200/500/1000/2000 毫秒重连。
 - 上报 `bridge.hello`、`focus.changed`、`editor.state`、`editor.caretChanged` 和 `editor.documentChanged`。
-- 支持 `command.ping`、`command.getState`、`command.listProjects`、`command.navigate`、`command.select`、`command.find`、`command.requestFocus`、`command.fullScreen`、`command.copyResourcePath` 和 `command.queryPythonPackages`。
+- 支持 `command.ping`、`command.getState`、`command.isFullScreen`、`command.listProjects`、`command.navigate`、`command.select`、`command.find`、`command.requestFocus`、`command.fullScreen`、`command.copyResourcePath` 和 `command.queryPythonPackages`。
 - `payload.activeEditor` 附带通用 `context` 和可选 `expressionContext`；Python 命令按需批量查询目标项目解释器中的指定包，不枚举整个环境。
-- `payload.fullScreen` 表示当前 Visual Studio 窗口是否全屏；`payload.editorOpenedAt` 是当前编辑器打开时间的 Unix 毫秒时间戳。握手 payload 也包含这些全屏判断字段，总服务只在 `bridge.hello` 时执行一次自动全屏判断。`command.fullScreen` 是幂等操作，已全屏或状态未知时不会切换。
-- 当 Solution Explorer 获得焦点且只选中一个文件或目录时，`command.copyResourcePath` 返回该资源的绝对路径；其他焦点或多选状态返回 `handled: false`，并附带可选的 `reason` 诊断字段。
+- `payload.fullScreen` 表示当前 Visual Studio 窗口是否全屏；`payload.editorOpenedAt` 是当前编辑器打开时间的 Unix 毫秒时间戳。`command.isFullScreen` 会重新查询当前窗口状态并返回 `data.fullScreen`。自动全屏会在 `bridge.hello` 后查询，确认未全屏才发送 `command.fullScreen`，切换后再次查询确认，并在窗口尚未就绪时重试。`command.fullScreen` 是幂等操作，已全屏或状态未知时不会切换。
+- 当 Solution Explorer 获得焦点且选中一个或多个文件/目录时，`command.copyResourcePath` 在 `paths` 返回全部绝对路径；单选时还保留兼容字段 `path`。其他焦点或没有选中资源时返回 `handled: false`，并附带可选的 `reason` 诊断字段。
 - `activeEditor.ownsFocus` 只在编辑器原生窗口实际拥有焦点时为 `true`；焦点位于 Solution Explorer 时为 `false`，即使仍有活动文档。
 - 支持按 VS 进程和项目精确定位；导航仅允许访问当前打开解决方案或项目目录内的文件。
 - 设置位置：**工具 → 选项 → Fast Visual Studio Bridge → 常规**。
@@ -30,6 +32,8 @@
 .\build-plugin.cmd
 ```
 
+普通构建默认为官方发行渠道，不启用插件内置的 `127.0.0.1` 更新器；官方 Marketplace 更新交给 Visual Studio 管理。
+
 ## 本地自动更新
 
 发布新版本到本地 Visual Studio 私有扩展源：
@@ -37,6 +41,8 @@
 ```powershell
 .\publish-local-plugin.cmd
 ```
+
+本地发布脚本会显式使用 `Local` 构建渠道，启用 loopback 自动更新；不要把该产物上传到官方 Marketplace。
 
 脚本会自动增加补丁版本、构建 Release VSIX、复制到 `D:\docker\www\vs-extensions`，并生成：
 
@@ -46,7 +52,7 @@ http://127.0.0.1:8800/vs-extensions/AtomFeed.xml
 
 在 Visual Studio 的“工具 → 选项 → 环境 → 扩展 → Additional Extension Galleries”中添加上述地址，并开启自动检查和自动安装扩展更新。更新下载后通常仍需重启 Visual Studio，新程序集才会生效。
 
-Visual Studio Community 2026 可能不提供私有扩展库入口，因此插件也内置本地自动更新：默认每 30 分钟读取上述 Atom Feed，发现新版后下载到用户本地目录，并启动隐藏助手等待当前 Visual Studio 退出，随后通过 `VSIXInstaller.exe /quiet` 安装。可在“工具 → 选项 → Fast Visual Studio Bridge → 常规”的“更新”分类中开关或修改检查间隔。首次从不带自更新功能的旧版升级，仍需手动安装一次新版 VSIX。
+Visual Studio Community 2026 可能不提供私有扩展库入口，因此插件也内置本地自动更新：启动约 10 秒后首次读取上述 Atom Feed，之后默认每 1 分钟检查一次。发现新版后下载到用户本地目录，并启动隐藏助手等待所有 Visual Studio 退出，随后清理同 ID 旧版本并通过 `VSIXInstaller.exe /quiet` 安装。可在“工具 → 选项 → Fast Visual Studio Bridge → 常规”的“更新”分类中开关或修改检查间隔。
 
 仓库备份和推送可运行：
 
