@@ -154,6 +154,7 @@ namespace FastVisualStudioBridge
                             case "command.getContext": data = SnapshotCollector.CurrentContext(dte, options); break;
                             case "command.getObjectInfo": data = SnapshotCollector.CurrentObjectInfo(dte, options); break;
                             case "command.getSelectedText": data = CurrentSelectedText(dte, options); break;
+                            case "command.getCurrentLineContent": data = CurrentLineContent(dte, options); break;
                             case "command.isFullScreen": data = IsFullScreenState(dte); break;
                             case "command.listProjects": data = Projects(dte).Select(p => p.ToDictionary()).ToList(); break;
                             case "command.navigate": data = Navigate(dte, payload, target, false); break;
@@ -399,6 +400,20 @@ namespace FastVisualStudioBridge
                 !Convert.ToBoolean(ownsFocus)) return FocusedControlSelectedText();
             var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument;
             return text?.Selection?.Text ?? (text == null ? null : string.Empty);
+        }
+
+        private static string CurrentLineContent(DTE dte, BridgeOptions options)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (!options.SendText) return null;
+            var snapshot = SnapshotCollector.Collect(dte, options);
+            var activeEditor = snapshot["activeEditor"] as IDictionary<string, object>;
+            if (activeEditor == null || !activeEditor.TryGetValue("ownsFocus", out var ownsFocus) ||
+                !Convert.ToBoolean(ownsFocus)) return null;
+            if (!activeEditor.TryGetValue("textContext", out var contextValue) ||
+                !(contextValue is IDictionary<string, object> context) ||
+                !context.TryGetValue("currentLine", out var line)) return null;
+            return line as string ?? string.Empty;
         }
 
         private static string FocusedControlSelectedText()
