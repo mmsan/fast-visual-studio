@@ -14,6 +14,7 @@ using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Threading.Tasks;
+using System.Windows.Automation;
 
 namespace FastVisualStudioBridge
 {
@@ -392,8 +393,26 @@ namespace FastVisualStudioBridge
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             if (!options.SendText) return null;
+            var snapshot = SnapshotCollector.Collect(dte, options);
+            var activeEditor = snapshot["activeEditor"] as IDictionary<string, object>;
+            if (activeEditor == null || !activeEditor.TryGetValue("ownsFocus", out var ownsFocus) ||
+                !Convert.ToBoolean(ownsFocus)) return FocusedControlSelectedText();
             var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument;
             return text?.Selection?.Text ?? (text == null ? null : string.Empty);
+        }
+
+        private static string FocusedControlSelectedText()
+        {
+            try
+            {
+                var focused = AutomationElement.FocusedElement;
+                if (focused == null || focused.Current.IsPassword) return null;
+                if (!focused.TryGetCurrentPattern(TextPattern.Pattern, out var patternValue)) return null;
+                var ranges = ((TextPattern)patternValue).GetSelection();
+                if (ranges == null || ranges.Length == 0) return string.Empty;
+                return string.Concat(ranges.Select(range => range.GetText(-1)));
+            }
+            catch { return null; }
         }
 
         private static object CopyResourcePath(DTE dte)
