@@ -51,6 +51,8 @@ It uses full-framework Visual Studio MSBuild and defaults to `-UpdateChannel Off
 
 ## Local update publishing
 
+Local publication is an explicit user-authorized action, not a default verification step. After ordinary code changes, only build and verify the VSIX (use the appropriate local update channel when validating updater code). Do not update the local gallery, bump a release solely for publication, or run `publish-local-plugin.cmd` unless the user explicitly asks to publish locally, release a version, or uses equivalent wording. A request to modify, fix, build, test, or verify does not authorize publication.
+
 The private gallery is normally `D:\docker\www\vs-extensions`, served at:
 
 ```text
@@ -78,9 +80,9 @@ Use `-NoVersionBump` only to retry an interrupted/manual version bump. Updates r
 
 For a coordinated release, use the highest current version across IDEA, Visual Studio, and VS Code, increment the patch component once, write that exact version to the VSIX manifest, `AssemblyInfo.cs`, IDEA `gradle.properties`, VS Code `package.json`/`package-lock.json`, and `D:\v\fast\bridge-version.json` when maintained. Then run this publisher with `-NoVersionBump`; do not independently bump Visual Studio. Verify the Atom feed `<Vsix><Version>` and `<content src>` point to the shared-version VSIX.
 
-Users add the feed under **Tools | Options | Environment | Extensions | Additional Extension Galleries**, enable automatic checks/installation, and restart Visual Studio when the update becomes active.
+Users add the feed under **Tools | Options | Environment | Extensions | Additional Extension Galleries** and enable automatic checks/installation. Local-channel builds use their built-in updater instead.
 
-Community may lack custom galleries, so preserve the built-in updater: it checks the loopback feed about 10 seconds after startup and at a configurable interval (default and minimum 1 minute), accepts only the stable ID and newer version, requires loopback feed/package URLs, downloads under `%LocalAppData%\Mirror\FastVisualStudioBridge\Updates`, and waits for all `devenv` processes to exit before removing older copies with the same stable ID and running `VSIXInstaller.exe /quiet`. Never execute feed-supplied commands or weaken the loopback restriction.
+Community may lack custom galleries, so preserve the built-in updater: it checks the loopback feed about 10 seconds after startup and at a configurable interval (default and minimum 10 seconds), accepts only the stable ID and newer version, requires loopback feed/package URLs, and downloads under `%LocalAppData%\Mirror\FastVisualStudioBridge\Updates`. A cross-process atomic lock permits only one pending helper across all IDE instances. After download, it prompts the user to restart; only confirmation schedules installation and requests a normal close of every `devenv` window (preserving save prompts). The helper waits up to 10 seconds, force-stops only remaining headless `devenv` processes, directly upgrades the stable ID with `VSIXInstaller.exe` (without a separate uninstall), waits briefly for setup finalization, and relaunches the originating IDE with its previous solution. If that launch remains headless for 15 seconds, terminate only that headless process and retry once. Never force-kill a process that still owns a main window, execute feed-supplied commands, or weaken the loopback restriction.
 
 ## Change discipline
 

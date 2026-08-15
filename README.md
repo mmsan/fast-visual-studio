@@ -52,7 +52,7 @@ http://127.0.0.1:8800/vs-extensions/AtomFeed.xml
 
 在 Visual Studio 的“工具 → 选项 → 环境 → 扩展 → Additional Extension Galleries”中添加上述地址，并开启自动检查和自动安装扩展更新。更新下载后通常仍需重启 Visual Studio，新程序集才会生效。
 
-Visual Studio Community 2026 可能不提供私有扩展库入口，因此插件也内置本地自动更新：启动约 10 秒后首次读取上述 Atom Feed，之后默认每 1 分钟检查一次。发现新版后下载到用户本地目录，并启动隐藏助手等待所有 Visual Studio 退出，随后清理同 ID 旧版本并通过 `VSIXInstaller.exe /quiet` 安装。可在“工具 → 选项 → Fast Visual Studio Bridge → 常规”的“更新”分类中开关或修改检查间隔。
+Visual Studio Community 2026 可能不提供私有扩展库入口，因此本地渠道插件也内置主动更新：启动约 10 秒后首次读取上述 Atom Feed，之后默认每 10 秒检查一次。跨 VS 实例的更新锁确保同一时间只有一个安装助手。发现新版并下载完成后，先弹窗询问是否立即重启安装；确认后才向所有 Visual Studio 窗口发送正常关闭请求。隐藏助手等待全部实例退出后，直接通过 `VSIXInstaller.exe /quiet` 执行同 ID 升级，短暂等待后再重新打开原来的解决方案，不再先卸载旧版。若首次启动 15 秒后仍只有无窗口引导进程，助手会结束该进程并重试一次，避免无限等待或保留重复实例。退出时若有未保存内容，各窗口仍会显示正常的保存提示；正常关闭等待 10 秒后，只会强制终止已经没有主窗口却仍驻留的 `devenv` 进程。官方渠道构建不包含这套本地更新逻辑。
 
 仓库备份和推送可运行：
 

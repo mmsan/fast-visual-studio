@@ -1,4 +1,6 @@
+using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Shell.Interop;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -20,21 +22,26 @@ namespace FastVisualStudioBridge
 #endif
         private const string ExtensionId = "FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F";
         private readonly BridgeOptions options;
+        private readonly EnvDTE.DTE dte;
         private readonly HttpClient client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         private readonly SemaphoreSlim checking = new SemaphoreSlim(1, 1);
         private Timer timer;
         private string scheduledVersion;
         private bool disposed;
 
-        internal LocalUpdateService(BridgeOptions options) { this.options = options; }
+        internal LocalUpdateService(BridgeOptions options, EnvDTE.DTE dte)
+        {
+            this.options = options;
+            this.dte = dte;
+        }
 
         internal void Start()
         {
             if (!EnabledForBuild) return;
-            // Migrate the former default. A loopback-only feed does not need a 30-minute polling delay.
-            if (options.UpdateCheckMinutes == 30)
+            // Migrate older minute-based values to the new 10-second local polling minimum.
+            if (options.UpdateCheckMinutes < 10)
             {
-                options.UpdateCheckMinutes = 1;
+                options.UpdateCheckMinutes = 10;
                 options.SaveSettingsToStorage();
             }
             ResetTimer(TimeSpan.FromSeconds(10));
@@ -49,13 +56,14 @@ namespace FastVisualStudioBridge
             if (disposed) return;
             timer?.Dispose();
             if (!options.AutoUpdate) { timer = null; return; }
-            var interval = TimeSpan.FromMinutes(Math.Max(1, Math.Min(1440, options.UpdateCheckMinutes)));
+            var interval = TimeSpan.FromSeconds(Math.Max(10, Math.Min(3600, options.UpdateCheckMinutes)));
             timer = new Timer(_ => CheckForUpdateAsync().Forget(), null, due, interval);
         }
 
         private async Task CheckForUpdateAsync()
         {
             if (disposed || !options.AutoUpdate || !await checking.WaitAsync(0).ConfigureAwait(false)) return;
+            string ownedUpdateLockPath = null;
             try
             {
                 if (!Uri.TryCreate(options.UpdateFeedUrl, UriKind.Absolute, out var feedUri) || !feedUri.IsLoopback)
@@ -98,25 +106,66 @@ namespace FastVisualStudioBridge
                 var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "Mirror", "FastVisualStudioBridge", "Updates");
                 Directory.CreateDirectory(directory);
+                ownedUpdateLockPath = TryAcquireUpdateLock(directory, candidates.Version);
+                if (ownedUpdateLockPath == null) return;
                 var packagePath = Path.Combine(directory, "FastVisualStudioBridge-pending.vsix");
                 var temporaryPath = packagePath + ".download";
                 File.WriteAllBytes(temporaryPath, bytes);
                 if (File.Exists(packagePath)) File.Delete(packagePath);
                 File.Move(temporaryPath, packagePath);
                 File.WriteAllText(Path.Combine(directory, "pending-version.txt"), candidates.Version.ToString());
-                ScheduleInstaller(packagePath, candidates.Version);
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                var solutionPath = dte?.Solution?.FullName;
+                var answer = VsShellUtilities.ShowMessageBox(
+                    FastBridgePackage.Instance,
+                    "Fast Visual Studio Bridge " + candidates.Version + " 已下载。是否立即重启 Visual Studio 并安装更新？",
+                    "Fast Visual Studio Bridge 更新",
+                    OLEMSGICON.OLEMSGICON_INFO,
+                    OLEMSGBUTTON.OLEMSGBUTTON_YESNO,
+                    OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
+                if (answer != (int)VSConstants.MessageBoxResult.IDYES)
+                {
+                    File.Delete(ownedUpdateLockPath);
+                    ownedUpdateLockPath = null;
+                    return;
+                }
+                ScheduleInstaller(packagePath, candidates.Version, solutionPath, ownedUpdateLockPath);
+                ownedUpdateLockPath = null;
                 scheduledVersion = candidates.Version.ToString();
                 ActivityLog.LogInformation(nameof(FastVisualStudioBridge),
-                    "Downloaded update " + candidates.Version + "; it will install after Visual Studio exits.");
+                    "Downloaded update " + candidates.Version + "; Visual Studio will restart to install it.");
+                dte?.Quit();
             }
             catch (Exception error)
             {
+                if (ownedUpdateLockPath != null) File.Delete(ownedUpdateLockPath);
                 ActivityLog.LogWarning(nameof(FastVisualStudioBridge), "Automatic update check failed: " + error.Message);
             }
             finally { checking.Release(); }
         }
 
-        private static void ScheduleInstaller(string packagePath, Version version)
+        private static string TryAcquireUpdateLock(string directory, Version version)
+        {
+            var lockPath = Path.Combine(directory, "install-pending.lock");
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    using (var stream = new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    using (var writer = new StreamWriter(stream)) writer.Write(version);
+                    return lockPath;
+                }
+                catch (IOException)
+                {
+                    if (attempt != 0 || !File.Exists(lockPath) ||
+                        DateTime.UtcNow - File.GetLastWriteTimeUtc(lockPath) < TimeSpan.FromMinutes(10)) return null;
+                    File.Delete(lockPath);
+                }
+            }
+            return null;
+        }
+
+        private static void ScheduleInstaller(string packagePath, Version version, string solutionPath, string updateLockPath)
         {
             var process = Process.GetCurrentProcess();
             var ideDirectory = Path.GetDirectoryName(process.MainModule.FileName);
@@ -127,29 +176,43 @@ namespace FastVisualStudioBridge
             var helperPath = Path.Combine(helperDirectory, "install-pending.ps1");
             var logPath = Path.Combine(helperDirectory, "install.log");
             var pendingVersionPath = Path.Combine(helperDirectory, "pending-version.txt");
-            var legacyLockDirectory = Path.Combine(helperDirectory, "install-pending.lock");
             var script =
                 "$ErrorActionPreference = 'Continue'\r\n" +
-                "while (Get-Process -Name devenv -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }\r\n" +
-                "Remove-Item -LiteralPath '" + PowerShellLiteral(legacyLockDirectory) + "' -Recurse -Force -ErrorAction SilentlyContinue\r\n" +
-                "Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Preparing update " + version + "')\r\n" +
-                "for ($i = 0; $i -lt 8; $i++) {\r\n" +
-                "  & '" + PowerShellLiteral(installer) + "' /quiet '/uninstall:" + ExtensionId + "' *>> '" + PowerShellLiteral(logPath) + "'\r\n" +
-                "  $uninstallResult = $LASTEXITCODE\r\n" +
-                "  Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] VSIX uninstall exit code: ' + $uninstallResult)\r\n" +
-                "  if ($uninstallResult -ne 0) { break }\r\n" +
+                "Get-Process -Name devenv -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }\r\n" +
+                "$graceDeadline = (Get-Date).AddSeconds(10)\r\n" +
+                "while ((Get-Process -Name devenv -ErrorAction SilentlyContinue) -and (Get-Date) -lt $graceDeadline) { Start-Sleep -Seconds 2 }\r\n" +
+                "$headless = Get-Process -Name devenv -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -eq 0 }\r\n" +
+                "if ($headless) {\r\n" +
+                "  Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Stopping headless devenv processes after graceful-close timeout: ' + (($headless.Id) -join ','))\r\n" +
+                "  $headless | Stop-Process -Force -ErrorAction SilentlyContinue\r\n" +
                 "}\r\n" +
+                "while (Get-Process -Name devenv -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }\r\n" +
+                "Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Preparing update " + version + "')\r\n" +
                 "$result = -1\r\n" +
                 "for ($attempt = 1; $attempt -le 3; $attempt++) {\r\n" +
-                "  & '" + PowerShellLiteral(installer) + "' /quiet '" + PowerShellLiteral(packagePath) + "' *>> '" + PowerShellLiteral(logPath) + "'\r\n" +
-                "  $result = $LASTEXITCODE\r\n" +
+                "  $installProcess = Start-Process -FilePath '" + PowerShellLiteral(installer) + "' -ArgumentList @('/quiet', '" + PowerShellLiteral(packagePath) + "') -WindowStyle Hidden -Wait -PassThru\r\n" +
+                "  $result = $installProcess.ExitCode\r\n" +
                 "  Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] VSIX install attempt ' + $attempt + ' exit code: ' + $result)\r\n" +
                 "  if ($result -eq 0) { break }\r\n" +
                 "  Start-Sleep -Seconds 3\r\n" +
                 "}\r\n" +
-                "if ($result -ne 0) { exit $result }\r\n" +
+                "if ($result -ne 0) { Remove-Item -LiteralPath '" + PowerShellLiteral(updateLockPath) + "' -Force -ErrorAction SilentlyContinue; exit $result }\r\n" +
+                "Start-Sleep -Seconds 3\r\n" +
                 "Remove-Item -LiteralPath '" + PowerShellLiteral(packagePath) + "' -Force -ErrorAction SilentlyContinue\r\n" +
-                "Remove-Item -LiteralPath '" + PowerShellLiteral(pendingVersionPath) + "' -Force -ErrorAction SilentlyContinue\r\n";
+                "Remove-Item -LiteralPath '" + PowerShellLiteral(pendingVersionPath) + "' -Force -ErrorAction SilentlyContinue\r\n" +
+                "Remove-Item -LiteralPath '" + PowerShellLiteral(updateLockPath) + "' -Force -ErrorAction SilentlyContinue\r\n" +
+                (string.IsNullOrWhiteSpace(solutionPath)
+                    ? "$launchArgs = @()\r\n"
+                    : "$launchArgs = @('" + PowerShellLiteral(solutionPath) + "')\r\n") +
+                "$started = Start-Process -FilePath '" + PowerShellLiteral(process.MainModule.FileName) + "' -ArgumentList $launchArgs -PassThru\r\n" +
+                "$windowDeadline = (Get-Date).AddSeconds(15)\r\n" +
+                "do { Start-Sleep -Seconds 1; $started.Refresh() } while (-not $started.HasExited -and $started.MainWindowHandle -eq 0 -and (Get-Date) -lt $windowDeadline)\r\n" +
+                "if (-not $started.HasExited -and $started.MainWindowHandle -eq 0) {\r\n" +
+                "  Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Relaunching after headless startup; pid=' + $started.Id)\r\n" +
+                "  Stop-Process -Id $started.Id -Force -ErrorAction SilentlyContinue\r\n" +
+                "  Start-Sleep -Seconds 2\r\n" +
+                "  Start-Process -FilePath '" + PowerShellLiteral(process.MainModule.FileName) + "' -ArgumentList $launchArgs\r\n" +
+                "}\r\n";
             File.WriteAllText(helperPath, script, new System.Text.UTF8Encoding(false));
             Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -File \"" + helperPath + "\"")
             { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });

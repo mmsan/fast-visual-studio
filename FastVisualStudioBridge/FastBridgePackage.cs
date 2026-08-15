@@ -37,7 +37,7 @@ namespace FastVisualStudioBridge
             var options = (BridgeOptions)GetDialogPage(typeof(BridgeOptions));
             Bridge = new BridgeService(this, dte, options, textManager, editorAdapters);
             Bridge.Start();
-            Updater = new LocalUpdateService(options);
+            Updater = new LocalUpdateService(options, dte);
             Updater.Start();
         }
 
