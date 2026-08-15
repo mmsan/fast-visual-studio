@@ -67,7 +67,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
+                ["capabilities"] = new[] { "state", "getInputable", "getObjectInfo", "getSelectedText", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
             };
         }
 
@@ -149,6 +149,9 @@ namespace FastVisualStudioBridge
                         switch (type)
                         {
                             case "command.getState": data = SnapshotCollector.Collect(dte, options); break;
+                            case "command.getInputable": data = SnapshotCollector.CurrentInputable(dte, options); break;
+                            case "command.getObjectInfo": data = SnapshotCollector.CurrentObjectInfo(dte, options); break;
+                            case "command.getSelectedText": data = CurrentSelectedText(dte, options); break;
                             case "command.isFullScreen": data = IsFullScreenState(dte); break;
                             case "command.listProjects": data = Projects(dte).Select(p => p.ToDictionary()).ToList(); break;
                             case "command.navigate": data = Navigate(dte, payload, target, false); break;
@@ -382,6 +385,14 @@ namespace FastVisualStudioBridge
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             return new Dictionary<string, object> { ["fullScreen"] = IsFullScreen(dte) };
+        }
+
+        private static string CurrentSelectedText(DTE dte, BridgeOptions options)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (!options.SendText) return null;
+            var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument;
+            return text?.Selection?.Text ?? (text == null ? null : string.Empty);
         }
 
         private static object CopyResourcePath(DTE dte)

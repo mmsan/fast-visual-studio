@@ -33,6 +33,69 @@ namespace FastVisualStudioBridge
             };
         }
 
+        internal static IDictionary<string, object> CollectStatus(DTE dte, BridgeOptions options)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var snapshot = Collect(dte, options);
+            var activeEditor = snapshot["activeEditor"];
+            return new Dictionary<string, object>
+            {
+                ["inputable"] = IsInputable(snapshot["focus"], activeEditor),
+                ["focus"] = snapshot["focus"],
+                ["activeEditor"] = activeEditor,
+                ["objectInfo"] = ObjectInfo(activeEditor)
+            };
+        }
+
+        internal static bool CurrentInputable(DTE dte, BridgeOptions options)
+        {
+            return Convert.ToBoolean(CollectStatus(dte, options)["inputable"]);
+        }
+
+        internal static object CurrentObjectInfo(DTE dte, BridgeOptions options)
+        {
+            return CollectStatus(dte, options)["objectInfo"];
+        }
+
+        private static bool IsInputable(object focusValue, object activeEditorValue)
+        {
+            var focus = focusValue as IDictionary<string, object>;
+            if (focus == null || !IsAvailable(focus)) return false;
+            var type = focus.TryGetValue("type", out var focusType) ? focusType as string : null;
+            if (string.Equals(type, "textInput", StringComparison.Ordinal))
+            {
+                var input = focus.TryGetValue("input", out var inputValue)
+                    ? inputValue as IDictionary<string, object> : null;
+                return input != null && input.TryGetValue("editable", out var editable) && Convert.ToBoolean(editable);
+            }
+
+            var editor = activeEditorValue as IDictionary<string, object>;
+            if (!string.Equals(type, "editor", StringComparison.Ordinal) || editor == null) return false;
+            var ownsFocus = editor.TryGetValue("ownsFocus", out var owns) && Convert.ToBoolean(owns);
+            var editableEditor = editor.TryGetValue("editable", out var editorEditable) && Convert.ToBoolean(editorEditable);
+            var writable = true;
+            if (editor.TryGetValue("file", out var fileValue) && fileValue is IDictionary<string, object> file &&
+                file.TryGetValue("writable", out var fileWritable)) writable = Convert.ToBoolean(fileWritable);
+            return ownsFocus && (editableEditor || !editor.ContainsKey("editable") && writable);
+        }
+
+        private static bool IsAvailable(IDictionary<string, object> focus)
+        {
+            return (!focus.TryGetValue("enabled", out var enabled) || Convert.ToBoolean(enabled)) &&
+                   (!focus.TryGetValue("visible", out var visible) || Convert.ToBoolean(visible)) &&
+                   (!focus.TryGetValue("showing", out var showing) || Convert.ToBoolean(showing));
+        }
+
+        private static object ObjectInfo(object activeEditorValue)
+        {
+            var editor = activeEditorValue as IDictionary<string, object>;
+            if (editor == null) return null;
+            var result = new Dictionary<string, object>();
+            foreach (var key in new[] { "project", "file", "context", "expressionContext" })
+                if (editor.ContainsKey(key)) result[key] = editor[key];
+            return result;
+        }
+
         internal static void MarkEditorOpened(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
@@ -153,10 +216,9 @@ namespace FastVisualStudioBridge
             if (project != null) editor["project"] = project.ToDictionary();
             editor["context"] = SyntaxContextAt(allText ?? string.Empty, offset, Path.GetExtension(path));
             var expression = ExtractExpression(allText ?? string.Empty, offset);
-            if (!string.IsNullOrWhiteSpace(expression)) editor["expressionContext"] = new Dictionary<string, object>
-            {
-                ["expression"] = expression, ["kind"] = "reference"
-            };
+            var codeProject = document.ProjectItem?.ContainingProject;
+            var expressionContext = ExpressionContext(dte, document, codeProject, expression, point);
+            if (expressionContext != null) editor["expressionContext"] = expressionContext;
             if (options.SendText)
             {
                 try
@@ -175,6 +237,221 @@ namespace FastVisualStudioBridge
                 catch { }
             }
             return editor;
+        }
+
+        private static IDictionary<string, object> ExpressionContext(
+            DTE dte, Document document, Project project, string expression, TextPoint point)
+        {
+            if (string.IsNullOrWhiteSpace(expression)) return null;
+            var result = new Dictionary<string, object>
+            {
+                ["expression"] = expression,
+                ["kind"] = "reference"
+            };
+            try
+            {
+                var parts = expression.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries);
+                var resolved = ResolveExpression(project, document, parts, point);
+                if (resolved == null) return result;
+
+                result["kind"] = ElementKind(resolved);
+                var type = TypeText(resolved);
+                if (!string.IsNullOrWhiteSpace(type)) result["type"] = type;
+                if (resolved is CodeFunction function)
+                {
+                    if (!string.IsNullOrWhiteSpace(type)) result["returnType"] = type;
+                    var parameters = Parameters(function);
+                    if (parameters.Count > 0) result["parameters"] = parameters;
+                }
+                var typeElement = TypeElement(resolved, project);
+                var members = Members(typeElement);
+                if (members.Count > 0) result["members"] = members;
+            }
+            catch
+            {
+                // CodeModel support differs by language and project system. Keep the
+                // expression fallback when a language model is unavailable.
+            }
+            return result;
+        }
+
+        private static CodeElement ResolveExpression(Project project, Document document, string[] parts, TextPoint point)
+        {
+            if (project == null || parts == null || parts.Length == 0) return null;
+            var current = FindNamedElement(project, document, parts[0], point);
+            if (current == null) return null;
+            for (var index = 1; index < parts.Length; index++)
+            {
+                var next = FindMember(TypeElement(current, project), parts[index]);
+                if (next == null) break;
+                current = next;
+            }
+            return current;
+        }
+
+        private static CodeElement FindNamedElement(Project project, Document document, string name, TextPoint point)
+        {
+            if (project == null || string.IsNullOrWhiteSpace(name)) return null;
+            try
+            {
+                var containing = FindContaining(project.CodeModel?.CodeElements, point);
+                var containingMatch = FindNamed(containing == null ? null : Children(containing), name);
+                if (containingMatch != null) return containingMatch;
+                return FindNamed(project.CodeModel?.CodeElements, name);
+            }
+            catch { return null; }
+        }
+
+        private static CodeElement FindContaining(CodeElements elements, TextPoint point)
+        {
+            if (elements == null || point == null) return null;
+            CodeElement result = null;
+            foreach (CodeElement element in elements)
+            {
+                if (!Contains(element, point)) continue;
+                result = FindContaining(Children(element), point) ?? element;
+            }
+            return result;
+        }
+
+        private static bool Contains(CodeElement element, TextPoint point)
+        {
+            try
+            {
+                return element?.StartPoint != null && element.EndPoint != null &&
+                    element.StartPoint.AbsoluteCharOffset <= point.AbsoluteCharOffset &&
+                    point.AbsoluteCharOffset <= element.EndPoint.AbsoluteCharOffset;
+            }
+            catch { return false; }
+        }
+
+        private static CodeElement FindNamed(CodeElements elements, string name)
+        {
+            if (elements == null) return null;
+            foreach (CodeElement element in elements)
+            {
+                if (string.Equals(element.Name, name, StringComparison.OrdinalIgnoreCase)) return element;
+                var nested = FindNamed(Children(element), name);
+                if (nested != null) return nested;
+            }
+            return null;
+        }
+
+        private static CodeElement FindMember(CodeElement type, string name)
+        {
+            var clean = Regex.Replace(name ?? string.Empty, @"\(.*\)$", string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(clean)) return null;
+            return FindNamed(Children(type), clean);
+        }
+
+        private static CodeElements Children(CodeElement element)
+        {
+            try { return element?.Children; }
+            catch { return null; }
+        }
+
+        private static CodeElement TypeElement(CodeElement element, Project project)
+        {
+            if (element == null) return null;
+            if (IsTypeElement(element)) return element;
+            CodeTypeRef type = null;
+            try
+            {
+                if (element is CodeFunction function) type = function.Type;
+                else if (element is CodeProperty property) type = property.Type;
+                else if (element is CodeVariable variable) type = variable.Type;
+                else if (element is CodeParameter parameter) type = parameter.Type;
+            }
+            catch { }
+            try
+            {
+                var codeType = type?.CodeType as CodeElement;
+                if (codeType != null) return codeType;
+            }
+            catch { }
+            var typeName = TypeText(type);
+            if (string.IsNullOrWhiteSpace(typeName) || project?.CodeModel == null) return null;
+            var simpleName = typeName.Split(new[] { '.', '<', '[', ' ' }, StringSplitOptions.RemoveEmptyEntries)[0];
+            return FindNamed(project.CodeModel.CodeElements, simpleName);
+        }
+
+        private static bool IsTypeElement(CodeElement element)
+        {
+            var kind = element?.Kind.ToString().ToLowerInvariant() ?? string.Empty;
+            return kind.Contains("class") || kind.Contains("interface") || kind.Contains("struct") ||
+                   kind.Contains("enum") || kind.Contains("delegate");
+        }
+
+        private static string ElementKind(CodeElement element)
+        {
+            var kind = element?.Kind.ToString().ToLowerInvariant() ?? string.Empty;
+            if (kind.Contains("function")) return "method";
+            if (kind.Contains("property")) return "property";
+            if (kind.Contains("field")) return "property";
+            if (kind.Contains("variable") || kind.Contains("parameter")) return "variable";
+            if (kind.Contains("class") || kind.Contains("interface") || kind.Contains("struct") ||
+                kind.Contains("enum") || kind.Contains("delegate")) return "type";
+            return "reference";
+        }
+
+        private static string TypeText(CodeElement element)
+        {
+            try
+            {
+                if (element is CodeFunction function) return TypeText(function.Type);
+                if (element is CodeProperty property) return TypeText(property.Type);
+                if (element is CodeVariable variable) return TypeText(variable.Type);
+                if (element is CodeParameter parameter) return TypeText(parameter.Type);
+                if (IsTypeElement(element)) return element.FullName;
+            }
+            catch { }
+            return null;
+        }
+
+        private static string TypeText(CodeTypeRef type)
+        {
+            try { return type?.AsString; }
+            catch { return null; }
+        }
+
+        private static List<Dictionary<string, object>> Members(CodeElement type)
+        {
+            var result = new List<Dictionary<string, object>>();
+            var children = Children(type);
+            if (children == null) return result;
+            foreach (CodeElement member in children)
+            {
+                var kind = ElementKind(member);
+                if (kind == "reference" || result.Count >= 15) continue;
+                var item = new Dictionary<string, object> { ["name"] = member.Name, ["kind"] = kind };
+                var typeText = TypeText(member);
+                if (!string.IsNullOrWhiteSpace(typeText)) item[kind == "method" ? "returnType" : "type"] = typeText;
+                if (member is CodeFunction function)
+                {
+                    var parameters = Parameters(function);
+                    if (parameters.Count > 0) item["parameters"] = parameters;
+                }
+                result.Add(item);
+            }
+            return result;
+        }
+
+        private static List<Dictionary<string, object>> Parameters(CodeFunction function)
+        {
+            var result = new List<Dictionary<string, object>>();
+            try
+            {
+                foreach (CodeParameter parameter in function.Parameters)
+                {
+                    if (result.Count >= 15) break;
+                    var item = new Dictionary<string, object> { ["name"] = parameter.Name };
+                    var type = TypeText(parameter.Type);
+                    if (!string.IsNullOrWhiteSpace(type)) item["type"] = type;
+                    result.Add(item);
+                }
+            }
+            catch { }
+            return result;
         }
 
         private static string SyntaxContextAt(string text, int offset, string extension)

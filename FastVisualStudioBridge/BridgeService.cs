@@ -37,6 +37,8 @@ namespace FastVisualStudioBridge
         private DocumentEvents documentEvents;
         private IWpfTextView activeTextView;
         private System.Threading.Timer debounce;
+        private System.Threading.Timer statusDebounce;
+        private string lastStatusSignature;
 
         internal string InstanceId => instanceId;
 
@@ -77,22 +79,28 @@ namespace FastVisualStudioBridge
             if (options.AutoConnect && (runner == null || runner.IsCompleted)) runner = Task.Run(() => ConnectionLoopAsync(lifetime.Token));
         }
 
-        private void OnLineChanged(TextPoint start, TextPoint end, int hint) => ScheduleSnapshot("editor.caretChanged", 40);
+        private void OnLineChanged(TextPoint start, TextPoint end, int hint) => ScheduleStatus(40);
         private void OnWindowActivated(Window got, Window lost)
         {
             AttachActiveTextView();
             ScheduleSnapshot("focus.changed", 40);
+            ScheduleStatus(40);
         }
-        private void OnSolutionChanged() => ScheduleSnapshot("editor.state", 50);
+        private void OnSolutionChanged()
+        {
+            ScheduleSnapshot("editor.state", 50);
+            ScheduleStatus(50);
+        }
 
         private void OnDocumentOpened(Document document)
         {
             AttachActiveTextView();
             SnapshotCollector.MarkEditorOpened(dte);
             ScheduleSnapshot("editor.state", 20);
+            ScheduleStatus(20);
         }
 
-        private void OnDocumentSaved(Document document) => ScheduleSnapshot("editor.documentChanged", 50);
+        private void OnDocumentSaved(Document document) => ScheduleStatus(50);
 
         private void AttachActiveTextView()
         {
@@ -123,18 +131,19 @@ namespace FastVisualStudioBridge
         }
 
         private void OnCaretPositionChanged(object sender, CaretPositionChangedEventArgs e) =>
-            ScheduleSnapshot("editor.caretChanged", 30);
+            ScheduleStatus(30);
 
         private void OnSelectionChanged(object sender, EventArgs e) =>
-            ScheduleSnapshot("editor.caretChanged", 20);
+            ScheduleStatus(20);
 
         private void OnTextBufferChanged(object sender, TextContentChangedEventArgs e) =>
-            ScheduleSnapshot("editor.documentChanged", 80);
+            ScheduleStatus(80);
 
         private void OnTextViewClosed(object sender, EventArgs e)
         {
             DetachActiveTextView();
             ScheduleSnapshot("editor.state", 20);
+            ScheduleStatus(20);
         }
 
         private void ScheduleSnapshot(string type, int delay)
@@ -146,6 +155,31 @@ namespace FastVisualStudioBridge
                 await package.JoinableTaskFactory.SwitchToMainThreadAsync();
                 await SendAsync(type, SnapshotCollector.Collect(dte, options), null).ConfigureAwait(false);
             }), null, delay, Timeout.Infinite);
+        }
+
+        private void ScheduleStatus(int delay)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            statusDebounce?.Dispose();
+            statusDebounce = new System.Threading.Timer(_ => package.JoinableTaskFactory.RunAsync(async () =>
+            {
+                await package.JoinableTaskFactory.SwitchToMainThreadAsync();
+                await SendStatusIfChanged().ConfigureAwait(false);
+            }), null, delay, Timeout.Infinite);
+        }
+
+        private async Task SendStatusIfChanged()
+        {
+            var status = SnapshotCollector.CollectStatus(dte, options);
+            var key = new Dictionary<string, object>
+            {
+                ["inputable"] = status["inputable"],
+                ["objectInfo"] = status["objectInfo"]
+            };
+            var signature = JsonConvert.SerializeObject(key);
+            if (string.Equals(signature, lastStatusSignature, StringComparison.Ordinal)) return;
+            lastStatusSignature = signature;
+            await SendAsync("editor.statusChanged", status, null).ConfigureAwait(false);
         }
 
         private async Task ConnectionLoopAsync(CancellationToken stop)
@@ -171,6 +205,7 @@ namespace FastVisualStudioBridge
                     socket = ws;
                     connected = true;
                     connectionId = Guid.NewGuid().ToString();
+                    lastStatusSignature = null;
                     attempt = 0;
                     var failures = connectionFailures;
                     connectionFailures = 0;
@@ -182,6 +217,7 @@ namespace FastVisualStudioBridge
                         var snapshot = SnapshotCollector.Collect(dte, options);
                         await SendAsync("bridge.hello", identity, null).ConfigureAwait(false);
                         await SendAsync("editor.state", snapshot, null).ConfigureAwait(false);
+                        await SendStatusIfChanged().ConfigureAwait(false);
                     });
                     await ReceiveLoopAsync(ws, token).ConfigureAwait(false);
                 }
@@ -251,7 +287,7 @@ namespace FastVisualStudioBridge
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             BridgeLog.Information("service disposed");
-            lifetime.Cancel(); connection?.Cancel(); debounce?.Dispose(); socket?.Abort();
+            lifetime.Cancel(); connection?.Cancel(); debounce?.Dispose(); statusDebounce?.Dispose(); socket?.Abort();
             if (textEvents != null) textEvents.LineChanged -= OnLineChanged;
             if (windowEvents != null) windowEvents.WindowActivated -= OnWindowActivated;
             if (solutionEvents != null) { solutionEvents.Opened -= OnSolutionChanged; solutionEvents.AfterClosing -= OnSolutionChanged; }
