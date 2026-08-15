@@ -52,6 +52,13 @@ namespace FastVisualStudioBridge
             return Convert.ToBoolean(CollectStatus(dte, options)["inputable"]);
         }
 
+        internal static string CurrentContext(DTE dte, BridgeOptions options)
+        {
+            var snapshot = Collect(dte, options);
+            var editor = snapshot["activeEditor"] as IDictionary<string, object>;
+            return editor != null && editor.TryGetValue("context", out var context) ? context as string : null;
+        }
+
         internal static object CurrentObjectInfo(DTE dte, BridgeOptions options)
         {
             return CollectStatus(dte, options)["objectInfo"];

@@ -67,7 +67,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "getObjectInfo", "getSelectedText", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
+                ["capabilities"] = new[] { "state", "getInputable", "getContext", "getObjectInfo", "getSelectedText", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
             };
         }
 
@@ -150,6 +150,7 @@ namespace FastVisualStudioBridge
                         {
                             case "command.getState": data = SnapshotCollector.Collect(dte, options); break;
                             case "command.getInputable": data = SnapshotCollector.CurrentInputable(dte, options); break;
+                            case "command.getContext": data = SnapshotCollector.CurrentContext(dte, options); break;
                             case "command.getObjectInfo": data = SnapshotCollector.CurrentObjectInfo(dte, options); break;
                             case "command.getSelectedText": data = CurrentSelectedText(dte, options); break;
                             case "command.isFullScreen": data = IsFullScreenState(dte); break;
