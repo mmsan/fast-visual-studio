@@ -170,6 +170,11 @@ namespace FastVisualStudioBridge
 
         private async Task SendStatusIfChanged()
         {
+            // This method is also called after an awaited SendAsync during the
+            // connection handshake. SendAsync may resume on a thread-pool
+            // thread, while CollectStatus (and all DTE access) must run on the
+            // Visual Studio UI thread.
+            await package.JoinableTaskFactory.SwitchToMainThreadAsync();
             var status = SnapshotCollector.CollectStatus(dte, options);
             var key = new Dictionary<string, object>
             {
