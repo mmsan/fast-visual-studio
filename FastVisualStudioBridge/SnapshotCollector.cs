@@ -6,6 +6,11 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
+using System.Windows.Media;
 
 namespace FastVisualStudioBridge
 {
@@ -16,6 +21,9 @@ namespace FastVisualStudioBridge
 
         [DllImport("user32.dll")] private static extern IntPtr GetFocus();
         [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
         [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
@@ -49,7 +57,18 @@ namespace FastVisualStudioBridge
 
         internal static bool CurrentInputable(DTE dte, BridgeOptions options)
         {
-            return Convert.ToBoolean(CollectStatus(dte, options)["inputable"]);
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var editorOwnsFocus = ActiveEditorOwnsFocus(dte);
+            var hwnd = GetFocus();
+            if (hwnd == IntPtr.Zero) return false;
+            var input = DescribeFocusedInput(hwnd, editorOwnsFocus);
+            return input != null && input.TryGetValue("editable", out var editable) && Convert.ToBoolean(editable);
+        }
+
+        internal static bool CurrentEditorOwnsFocus(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            return ActiveEditorOwnsFocus(dte);
         }
 
         internal static string CurrentContext(DTE dte, BridgeOptions options)
@@ -68,13 +87,11 @@ namespace FastVisualStudioBridge
         {
             var focus = focusValue as IDictionary<string, object>;
             if (focus == null || !IsAvailable(focus)) return false;
+            var input = focus.TryGetValue("input", out var inputValue)
+                ? inputValue as IDictionary<string, object> : null;
+            if (input != null && input.TryGetValue("editable", out var editable)) return Convert.ToBoolean(editable);
+
             var type = focus.TryGetValue("type", out var focusType) ? focusType as string : null;
-            if (string.Equals(type, "textInput", StringComparison.Ordinal))
-            {
-                var input = focus.TryGetValue("input", out var inputValue)
-                    ? inputValue as IDictionary<string, object> : null;
-                return input != null && input.TryGetValue("editable", out var editable) && Convert.ToBoolean(editable);
-            }
 
             var editor = activeEditorValue as IDictionary<string, object>;
             if (!string.Equals(type, "editor", StringComparison.Ordinal) || editor == null) return false;
@@ -143,11 +160,13 @@ namespace FastVisualStudioBridge
             var hwnd = GetFocus();
             if (hwnd == IntPtr.Zero) return new Dictionary<string, object> { ["type"] = "none" };
             var name = new StringBuilder(256); GetClassName(hwnd, name, name.Capacity);
+            var input = DescribeFocusedInput(hwnd, editorOwnsFocus);
             var result = new Dictionary<string, object>
             {
-                ["type"] = editorOwnsFocus ? "editor" : "component", ["className"] = name.ToString(),
+                ["type"] = editorOwnsFocus ? "editor" : input != null ? "textInput" : "component", ["className"] = name.ToString(),
                 ["nativeHandle"] = unchecked((ulong)hwnd.ToInt64()).ToString()
             };
+            if (input != null) result["input"] = input;
             if (GetWindowRect(hwnd, out var r)) result["bounds"] = new Dictionary<string, object>
             { ["screenX"] = r.Left, ["screenY"] = r.Top, ["width"] = r.Right - r.Left, ["height"] = r.Bottom - r.Top };
             return result;
@@ -158,11 +177,51 @@ namespace FastVisualStudioBridge
             ThreadHelper.ThrowIfNotOnUIThread();
             try
             {
+                var textView = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+                if (textView != null && !textView.IsClosed && textView.HasAggregateFocus) return true;
                 var focus = GetFocus();
                 var editor = dte.ActiveDocument?.ActiveWindow?.HWnd ?? IntPtr.Zero;
                 return focus != IntPtr.Zero && editor != IntPtr.Zero && IsDescendant(focus, editor);
             }
             catch { return false; }
+        }
+
+        private static IDictionary<string, object> DescribeFocusedInput(IntPtr hwnd, bool editorOwnsFocus)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (editorOwnsFocus)
+            {
+                var document = FastBridgePackage.Instance?.Dte?.ActiveDocument;
+                return new Dictionary<string, object> { ["editable"] = document != null && !document.ReadOnly, ["kind"] = "editor" };
+            }
+
+            var wpfInput = FocusedWpfInput();
+            if (wpfInput != null) return wpfInput;
+
+            var className = new StringBuilder(256);
+            GetClassName(hwnd, className, className.Capacity);
+            if (!string.Equals(className.ToString(), "Edit", StringComparison.OrdinalIgnoreCase)) return null;
+            var editable = IsWindowVisible(hwnd) && IsWindowEnabled(hwnd) &&
+                SendMessage(hwnd, 0x00CF, IntPtr.Zero, IntPtr.Zero) == IntPtr.Zero; // EM_GETREADONLY
+            return new Dictionary<string, object> { ["editable"] = editable, ["kind"] = "nativeEdit" };
+        }
+
+        private static IDictionary<string, object> FocusedWpfInput()
+        {
+            var current = Keyboard.FocusedElement as DependencyObject;
+            while (current != null)
+            {
+                if (current is TextBoxBase textBox)
+                    return new Dictionary<string, object> { ["editable"] = textBox.IsEnabled && textBox.IsVisible && !textBox.IsReadOnly, ["kind"] = "textBox" };
+                if (current is PasswordBox passwordBox)
+                    return new Dictionary<string, object> { ["editable"] = passwordBox.IsEnabled && passwordBox.IsVisible, ["kind"] = "passwordBox" };
+                if (current is ComboBox comboBox && comboBox.IsEditable)
+                    return new Dictionary<string, object> { ["editable"] = comboBox.IsEnabled && comboBox.IsVisible, ["kind"] = "comboBox" };
+                var parent = current is Visual || current is System.Windows.Media.Media3D.Visual3D
+                    ? VisualTreeHelper.GetParent(current) : null;
+                current = parent ?? LogicalTreeHelper.GetParent(current);
+            }
+            return null;
         }
 
         private static bool IsDescendant(IntPtr child, IntPtr ancestor)

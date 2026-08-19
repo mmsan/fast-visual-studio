@@ -25,7 +25,7 @@
 - `focus.changed`：Visual Studio 活动窗口变化。
 - `editor.statusChanged`：输入能力或当前对象信息变化时发送一次；光标在同一对象内部移动不会产生高频事件。
 
-快照的 `payload.focus` 描述当前线程拥有焦点的原生窗口控件；`payload.activeEditor` 描述活动文本文件、项目、光标、选择和可选文本上下文。`activeEditor.ownsFocus` 只有在编辑器原生窗口实际拥有焦点时才为 `true`；焦点位于 Solution Explorer 时即使仍有活动文档也必须为 `false`。关闭“发送文本”后不发送选择文本或源码上下文。
+快照的 `payload.focus` 描述当前线程拥有焦点的原生窗口控件；`payload.activeEditor` 描述活动文本文件、项目、光标、选择和可选文本上下文。`activeEditor.ownsFocus` 只有在 VS 文本视图实际拥有焦点时才为 `true`；焦点位于 Solution Explorer 时即使仍有活动文档也必须为 `false`。焦点是可编辑文本控件时，`focus.type` 为 `textInput`（编辑器仍为 `editor`），并以 `focus.input.editable` 报告其原生/WPF 可编辑状态。关闭“发送文本”后不发送选择文本或源码上下文。
 
 ## 命令
 

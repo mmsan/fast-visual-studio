@@ -23,6 +23,7 @@ namespace FastVisualStudioBridge
         public const string NoSolutionContext = "{adfc4e60-0397-11d1-9f4e-00a0c911004f}";
         public const string SolutionExistsContext = "{f1536ef8-92ec-443c-9ed7-fdadf150da82}";
         internal static FastBridgePackage Instance { get; private set; }
+        internal DTE Dte { get; private set; }
         internal BridgeService Bridge { get; private set; }
         internal LocalUpdateService Updater { get; private set; }
 
@@ -31,6 +32,7 @@ namespace FastVisualStudioBridge
             await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
             Instance = this;
             var dte = (DTE)await GetServiceAsync(typeof(DTE));
+            Dte = dte;
             var textManager = (IVsTextManager)await GetServiceAsync(typeof(SVsTextManager));
             var componentModel = (IComponentModel)await GetServiceAsync(typeof(SComponentModel));
             var editorAdapters = componentModel?.GetService<IVsEditorAdaptersFactoryService>();

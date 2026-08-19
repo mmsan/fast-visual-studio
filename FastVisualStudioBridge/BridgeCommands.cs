@@ -394,10 +394,7 @@ namespace FastVisualStudioBridge
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             if (!options.SendText) return null;
-            var snapshot = SnapshotCollector.Collect(dte, options);
-            var activeEditor = snapshot["activeEditor"] as IDictionary<string, object>;
-            if (activeEditor == null || !activeEditor.TryGetValue("ownsFocus", out var ownsFocus) ||
-                !Convert.ToBoolean(ownsFocus)) return FocusedControlSelectedText();
+            if (!SnapshotCollector.CurrentEditorOwnsFocus(dte)) return FocusedControlSelectedText();
             var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument;
             return text?.Selection?.Text ?? (text == null ? null : string.Empty);
         }

@@ -14,7 +14,7 @@
 - `payload.activeEditor` 附带通用 `context` 和可选 `expressionContext`；Visual Studio 会通过 EnvDTE CodeModel 尽力解析当前表达式的对象类型、方法返回类型、参数和成员，无法解析时保留表达式文本；Python 命令按需批量查询目标项目解释器中的指定包，不枚举整个环境。
 - `payload.fullScreen` 表示当前 Visual Studio 窗口是否全屏；`payload.editorOpenedAt` 是当前编辑器打开时间的 Unix 毫秒时间戳。`command.isFullScreen` 会重新查询当前窗口状态并返回 `data.fullScreen`。自动全屏会在 `bridge.hello` 后查询，确认未全屏才发送 `command.fullScreen`，切换后再次查询确认，并在窗口尚未就绪时重试。`command.fullScreen` 是幂等操作，已全屏或状态未知时不会切换。
 - 当 Solution Explorer 获得焦点且选中一个或多个文件/目录时，`command.copyResourcePath` 在 `paths` 返回全部绝对路径；单选时还保留兼容字段 `path`。其他焦点或没有选中资源时返回 `handled: false`，并附带可选的 `reason` 诊断字段。
-- `activeEditor.ownsFocus` 只在编辑器原生窗口实际拥有焦点时为 `true`；焦点位于 Solution Explorer 时为 `false`，即使仍有活动文档。
+- `activeEditor.ownsFocus` 仅在 VS 文本视图实际拥有焦点时为 `true`；焦点位于 Solution Explorer 时为 `false`，即使仍有活动文档。`focus.input` 描述当前焦点输入控件的可编辑性，涵盖文本编辑器、WPF 文本框/可编辑下拉框和原生 Edit 控件。
 - 支持按 VS 进程和项目精确定位；导航仅允许访问当前打开解决方案或项目目录内的文件。
 - 设置位置：**工具 → 选项 → Fast Visual Studio Bridge → 常规**。
 

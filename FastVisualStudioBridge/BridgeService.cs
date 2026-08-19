@@ -42,6 +42,18 @@ namespace FastVisualStudioBridge
 
         internal string InstanceId => instanceId;
 
+        // Accessed only from the Visual Studio UI thread by SnapshotCollector.
+        // The view is refreshed by window/document events. Do not call the
+        // synchronous IVsTextManager service from a latency-sensitive query.
+        internal IWpfTextView CurrentActiveTextView
+        {
+            get
+            {
+                ThreadHelper.ThrowIfNotOnUIThread();
+                return activeTextView;
+            }
+        }
+
         internal BridgeService(FastBridgePackage package, DTE dte, BridgeOptions options,
             IVsTextManager textManager, IVsEditorAdaptersFactoryService editorAdapters)
         {
@@ -79,7 +91,10 @@ namespace FastVisualStudioBridge
             if (options.AutoConnect && (runner == null || runner.IsCompleted)) runner = Task.Run(() => ConnectionLoopAsync(lifetime.Token));
         }
 
-        private void OnLineChanged(TextPoint start, TextPoint end, int hint) => ScheduleStatus(40);
+        // Building object context can read the document and query CodeModel.
+        // Keep it off the immediate path after typing/selection shortcuts so
+        // command.getInputable is not queued behind that work on the VS UI thread.
+        private void OnLineChanged(TextPoint start, TextPoint end, int hint) => ScheduleStatus(500);
         private void OnWindowActivated(Window got, Window lost)
         {
             AttachActiveTextView();
@@ -131,13 +146,13 @@ namespace FastVisualStudioBridge
         }
 
         private void OnCaretPositionChanged(object sender, CaretPositionChangedEventArgs e) =>
-            ScheduleStatus(30);
+            ScheduleStatus(500);
 
         private void OnSelectionChanged(object sender, EventArgs e) =>
-            ScheduleStatus(20);
+            ScheduleStatus(500);
 
         private void OnTextBufferChanged(object sender, TextContentChangedEventArgs e) =>
-            ScheduleStatus(80);
+            ScheduleStatus(500);
 
         private void OnTextViewClosed(object sender, EventArgs e)
         {
