@@ -17,6 +17,9 @@ namespace FastVisualStudioBridge
 {
     internal sealed class BridgeService : IDisposable
     {
+        private static readonly TimeSpan SlowReconnectAfter = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan SlowReconnectDelay = TimeSpan.FromSeconds(6);
+        private static readonly TimeSpan ConnectionLogInterval = TimeSpan.FromMinutes(1);
         private readonly FastBridgePackage package;
         private readonly DTE dte;
         private readonly BridgeOptions options;
@@ -31,6 +34,10 @@ namespace FastVisualStudioBridge
         private long sequence;
         private string connectionId = Guid.NewGuid().ToString();
         private int connectionFailures;
+        private readonly object connectionLogGate = new object();
+        private readonly Dictionary<string, ConnectionLogState> connectionLogStates = new Dictionary<string, ConnectionLogState>();
+        private DateTime reconnectStartedAt;
+        private bool slowReconnectLogged;
         private TextEditorEvents textEvents;
         private WindowEvents windowEvents;
         private SolutionEvents solutionEvents;
@@ -88,6 +95,8 @@ namespace FastVisualStudioBridge
             BridgeLog.Information("settings changed; reconnecting");
             connection?.Cancel();
             socket?.Abort();
+            reconnectStartedAt = default(DateTime);
+            slowReconnectLogged = false;
             if (options.AutoConnect && (runner == null || runner.IsCompleted)) runner = Task.Run(() => ConnectionLoopAsync(lifetime.Token));
         }
 
@@ -227,6 +236,8 @@ namespace FastVisualStudioBridge
                     connectionId = Guid.NewGuid().ToString();
                     lastStatusSignature = null;
                     attempt = 0;
+                    reconnectStartedAt = default(DateTime);
+                    slowReconnectLogged = false;
                     var failures = connectionFailures;
                     connectionFailures = 0;
                     BridgeLog.Information("connected" + (failures > 0 ? "; recoveredAfterFailures=" + failures : ""));
@@ -245,8 +256,7 @@ namespace FastVisualStudioBridge
                 catch (Exception error)
                 {
                     var failures = ++connectionFailures;
-                    if (failures <= 3 || failures % 10 == 0)
-                        BridgeLog.Warning("connection failed; attempt=" + failures, error);
+                    LogConnectionEvent("failure", "connection failed; attempt=" + failures, error, true);
                 }
                 finally
                 {
@@ -254,12 +264,20 @@ namespace FastVisualStudioBridge
                     old?.Dispose(); connection?.Dispose(); connection = null;
                 }
                 if (connected && !stop.IsCancellationRequested && options.AutoConnect)
-                    BridgeLog.Information("connection closed; retrying");
+                    LogConnectionEvent("closed", "connection closed; retrying", null, false);
                 if (!stop.IsCancellationRequested && options.AutoConnect)
                 {
-                    var delay = delays[Math.Min(attempt++, delays.Length - 1)];
-                    if (attempt <= 3 || attempt % 10 == 0)
-                        BridgeLog.Information("reconnect scheduled; delayMs=" + delay);
+                    if (reconnectStartedAt == default(DateTime)) reconnectStartedAt = DateTime.UtcNow;
+                    var retryingFor = DateTime.UtcNow - reconnectStartedAt;
+                    var delay = retryingFor >= SlowReconnectAfter
+                        ? SlowReconnectDelay
+                        : TimeSpan.FromMilliseconds(delays[Math.Min(attempt++, delays.Length - 1)]);
+                    if (delay == SlowReconnectDelay && !slowReconnectLogged)
+                    {
+                        slowReconnectLogged = true;
+                        BridgeLog.Information("connection remains unavailable for " + (int)retryingFor.TotalSeconds
+                            + "s; retry delay increased to " + (int)SlowReconnectDelay.TotalMilliseconds + "ms");
+                    }
                     await Task.Delay(delay, stop).ConfigureAwait(false);
                 }
             }
@@ -299,8 +317,39 @@ namespace FastVisualStudioBridge
             var bytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(message, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore }));
             await sendLock.WaitAsync().ConfigureAwait(false);
             try { if (ws.State == WebSocketState.Open) await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, lifetime.Token).ConfigureAwait(false); }
-            catch (Exception error) { BridgeLog.Warning("message send failed; type=" + type, error); }
+            catch (Exception error) { LogConnectionEvent("send:" + type, "message send failed; type=" + type, error, true); }
             finally { sendLock.Release(); }
+        }
+
+        private void LogConnectionEvent(string kind, string message, Exception error, bool warning)
+        {
+            lock (connectionLogGate)
+            {
+                ConnectionLogState state;
+                if (!connectionLogStates.TryGetValue(kind, out state))
+                {
+                    state = new ConnectionLogState();
+                    connectionLogStates[kind] = state;
+                }
+                state.Count++;
+                var now = DateTime.UtcNow;
+                if (state.Count <= 3 || now - state.LastLoggedAt >= ConnectionLogInterval)
+                {
+                    var suffix = state.Suppressed > 0 ? "; suppressed=" + state.Suppressed : string.Empty;
+                    state.LastLoggedAt = now;
+                    state.Suppressed = 0;
+                    if (warning) BridgeLog.Warning(message + suffix, error);
+                    else BridgeLog.Information(message + suffix);
+                }
+                else state.Suppressed++;
+            }
+        }
+
+        private sealed class ConnectionLogState
+        {
+            internal int Count;
+            internal DateTime LastLoggedAt;
+            internal int Suppressed;
         }
 
         public void Dispose()

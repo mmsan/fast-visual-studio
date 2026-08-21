@@ -9,6 +9,8 @@ namespace FastVisualStudioBridge
     internal static class BridgeLog
     {
         private const string FilePrefix = "fast-visual-studio-bridge-";
+        private const long MaxLogFileBytes = 5L * 1024 * 1024;
+        private const int LogBackupCount = 2;
         private static readonly object Gate = new object();
         private static readonly string LogDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -40,9 +42,10 @@ namespace FastVisualStudioBridge
                     Prune();
                     var file = Path.Combine(LogDirectory,
                         FilePrefix + DateTime.UtcNow.ToString("yyyy-MM-dd") + ".log");
-                    File.AppendAllText(file,
-                        DateTimeOffset.UtcNow.ToString("O") + " [" + level + "] " +
-                        Format(message, error) + Environment.NewLine, Encoding.UTF8);
+                    var line = DateTimeOffset.UtcNow.ToString("O") + " [" + level + "] " +
+                        Format(message, error) + Environment.NewLine;
+                    RotateIfNeeded(file, line);
+                    File.AppendAllText(file, line, Encoding.UTF8);
                 }
             }
             catch
@@ -51,10 +54,23 @@ namespace FastVisualStudioBridge
             }
         }
 
+        private static void RotateIfNeeded(string file, string line)
+        {
+            if (!File.Exists(file) || new FileInfo(file).Length + Encoding.UTF8.GetByteCount(line) <= MaxLogFileBytes) return;
+            var oldest = file + "." + LogBackupCount;
+            if (File.Exists(oldest)) File.Delete(oldest);
+            for (var index = LogBackupCount - 1; index >= 1; index--)
+            {
+                var source = file + "." + index;
+                if (File.Exists(source)) File.Move(source, file + "." + (index + 1));
+            }
+            File.Move(file, file + ".1");
+        }
+
         private static void Prune()
         {
             var cutoff = DateTime.UtcNow.AddDays(-3);
-            foreach (var file in Directory.GetFiles(LogDirectory, FilePrefix + "*.log"))
+            foreach (var file in Directory.GetFiles(LogDirectory, FilePrefix + "*.log*"))
             {
                 if (File.GetLastWriteTimeUtc(file) < cutoff)
                 {
