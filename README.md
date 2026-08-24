@@ -6,7 +6,7 @@
 
 ## 功能
 
-- 支持 `command.getSelectedText` 主动读取当前编辑器的选中文本，以及 `command.getCurrentLineContent` 读取当前编辑器行内容；没有选择时前者返回空字符串，未开启 `SendText` 或没有活动编辑器时返回 `null`。
+- 支持 `command.getSelectedText` 主动读取当前编辑器的选中文本，以及 `command.getCurrentLineContent` 读取当前编辑器行内容；选区结果和上次主动读取不同时立即返回，相同时会在 80 毫秒后复读一次并返回最新结果；没有选择时前者返回空字符串，未开启 `SendText` 或没有活动编辑器时返回 `null`。
 
 - 默认连接 `ws://127.0.0.1:19900`，断线后按 200/500/1000/2000 毫秒重连。
 - 上报 `bridge.hello`、`focus.changed`、`editor.state` 和只在状态变化时发送的 `editor.statusChanged`；不再发送高频的 `editor.caretChanged` 和 `editor.documentChanged`。
@@ -54,7 +54,7 @@ http://127.0.0.1:8800/vs-extensions/AtomFeed.xml
 
 在 Visual Studio 的“工具 → 选项 → 环境 → 扩展 → Additional Extension Galleries”中添加上述地址，并开启自动检查和自动安装扩展更新。更新下载后通常仍需重启 Visual Studio，新程序集才会生效。
 
-Visual Studio Community 2026 可能不提供私有扩展库入口，因此本地渠道插件也内置主动更新：启动约 10 秒后首次读取上述 Atom Feed，之后默认每 10 秒检查一次。跨 VS 实例的更新锁确保同一时间只有一个安装助手。发现新版并下载完成后，先弹窗询问是否立即重启安装；确认后才向所有 Visual Studio 窗口发送正常关闭请求。隐藏助手等待全部实例退出后，直接通过 `VSIXInstaller.exe /quiet` 执行同 ID 升级，短暂等待后再重新打开原来的解决方案，不再先卸载旧版。若首次启动 15 秒后仍只有无窗口引导进程，助手会结束该进程并重试一次，避免无限等待或保留重复实例。退出时若有未保存内容，各窗口仍会显示正常的保存提示；正常关闭等待 10 秒后，只会强制终止已经没有主窗口却仍驻留的 `devenv` 进程。官方渠道构建不包含这套本地更新逻辑。
+Visual Studio Community 2026 可能不提供私有扩展库入口，因此本地渠道插件也内置主动更新：启动约 10 秒后首次读取上述 Atom Feed，之后默认每 10 秒检查一次。跨 VS 实例的更新锁确保同一时间只有一个安装助手。发现新版并下载完成后，先弹窗询问是否立即重启安装；确认后才向所有 Visual Studio 窗口发送正常关闭请求。隐藏助手等待全部实例退出后，会在有限超时内等待当前 VS 安装目录下的 `MSBuild.exe` 结束，并只清理没有主窗口的残留 MSBuild 进程，再通过 `VSIXInstaller.exe /quiet` 执行同 ID 升级，短暂等待后重新打开原来的解决方案。若仍有可见的 VS 或 MSBuild 窗口，助手会记录原因并释放更新锁，稍后重新检查，避免无限等待或强制关闭用户进程。官方渠道构建不包含这套本地更新逻辑。
 
 仓库备份和推送可运行：
 

@@ -171,6 +171,11 @@ namespace FastVisualStudioBridge
             var ideDirectory = Path.GetDirectoryName(process.MainModule.FileName);
             var installer = Path.Combine(ideDirectory, "VSIXInstaller.exe");
             if (!File.Exists(installer)) throw new FileNotFoundException("VSIXInstaller.exe was not found.", installer);
+            var visualStudioRoot = Directory.GetParent(ideDirectory)?.Parent?.FullName;
+            var msbuildRoot = string.IsNullOrWhiteSpace(visualStudioRoot)
+                ? null
+                : Path.Combine(visualStudioRoot, "MSBuild");
+            if (string.IsNullOrWhiteSpace(msbuildRoot)) throw new InvalidOperationException("Could not determine the Visual Studio installation root.");
 
             var helperDirectory = Path.GetDirectoryName(packagePath);
             var helperPath = Path.Combine(helperDirectory, "install-pending.ps1");
@@ -179,14 +184,27 @@ namespace FastVisualStudioBridge
             var script =
                 "$ErrorActionPreference = 'Continue'\r\n" +
                 "Get-Process -Name devenv -ErrorAction SilentlyContinue | ForEach-Object { [void]$_.CloseMainWindow() }\r\n" +
-                "$graceDeadline = (Get-Date).AddSeconds(10)\r\n" +
+                "$graceDeadline = (Get-Date).AddSeconds(30)\r\n" +
                 "while ((Get-Process -Name devenv -ErrorAction SilentlyContinue) -and (Get-Date) -lt $graceDeadline) { Start-Sleep -Seconds 2 }\r\n" +
                 "$headless = Get-Process -Name devenv -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -eq 0 }\r\n" +
                 "if ($headless) {\r\n" +
                 "  Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Stopping headless devenv processes after graceful-close timeout: ' + (($headless.Id) -join ','))\r\n" +
                 "  $headless | Stop-Process -Force -ErrorAction SilentlyContinue\r\n" +
                 "}\r\n" +
-                "while (Get-Process -Name devenv -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 2 }\r\n" +
+                "$visible = Get-Process -Name devenv -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }\r\n" +
+                "if ($visible) { Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Visual Studio did not exit after the graceful-close timeout; waiting for the user instead of forcing close.'); Remove-Item -LiteralPath '" + PowerShellLiteral(updateLockPath) + "' -Force -ErrorAction SilentlyContinue; exit 2004 }\r\n" +
+                "$msbuildRoot = '" + PowerShellLiteral(msbuildRoot) + "'\r\n" +
+                "function Get-FastVisualStudioMsBuild { Get-Process -Name MSBuild -ErrorAction SilentlyContinue | Where-Object { try { $_.Path -and $_.Path.StartsWith($msbuildRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) } catch { $false } } }\r\n" +
+                "$msbuildDeadline = (Get-Date).AddSeconds(30)\r\n" +
+                "while ((@(Get-FastVisualStudioMsBuild)).Count -gt 0 -and (Get-Date) -lt $msbuildDeadline) { Start-Sleep -Seconds 2 }\r\n" +
+                "$msbuild = @(Get-FastVisualStudioMsBuild)\r\n" +
+                "if ($msbuild) {\r\n" +
+                "  $visibleMsBuild = @($msbuild | Where-Object { $_.MainWindowHandle -ne 0 })\r\n" +
+                "  if ($visibleMsBuild) { Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Visual Studio MSBuild is still running with a visible window: ' + (($visibleMsBuild.Id) -join ',') + '; retrying later.'); Remove-Item -LiteralPath '" + PowerShellLiteral(updateLockPath) + "' -Force -ErrorAction SilentlyContinue; exit 2004 }\r\n" +
+                "  Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Stopping Visual Studio MSBuild processes blocking VSIX installation: ' + (($msbuild.Id) -join ','))\r\n" +
+                "  $msbuild | Stop-Process -Force -ErrorAction SilentlyContinue\r\n" +
+                "  Start-Sleep -Seconds 2\r\n" +
+                "}\r\n" +
                 "Add-Content -LiteralPath '" + PowerShellLiteral(logPath) + "' -Value ('[' + (Get-Date) + '] Preparing update " + version + "')\r\n" +
                 "$result = -1\r\n" +
                 "for ($attempt = 1; $attempt -le 3; $attempt++) {\r\n" +

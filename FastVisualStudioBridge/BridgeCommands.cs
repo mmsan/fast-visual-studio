@@ -20,13 +20,23 @@ namespace FastVisualStudioBridge
 {
     internal static class BridgeCommands
     {
+        private static string lastSelectedText;
+
         private sealed class CommandException : Exception
         {
             internal readonly string Code;
             internal CommandException(string code, string message) : base(message) { Code = code; }
         }
+
+        private static string Fingerprint(string value)
+        {
+            using (var sha256 = SHA256.Create())
+            {
+                var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty));
+                return BitConverter.ToString(hash).Replace("-", string.Empty).Substring(0, 16);
+            }
+        }
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
-        [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern IntPtr GetFocus();
         [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
@@ -153,7 +163,7 @@ namespace FastVisualStudioBridge
                             case "command.getInputable": data = SnapshotCollector.CurrentInputable(dte, options); break;
                             case "command.getContext": data = SnapshotCollector.CurrentContext(dte, options); break;
                             case "command.getObjectInfo": data = SnapshotCollector.CurrentObjectInfo(dte, options); break;
-                            case "command.getSelectedText": data = CurrentSelectedText(dte, options); break;
+                            case "command.getSelectedText": data = await CurrentSelectedTextAsync(dte, options, package); break;
                             case "command.getCurrentLineContent": data = CurrentLineContent(dte, options); break;
                             case "command.isFullScreen": data = IsFullScreenState(dte); break;
                             case "command.listProjects": data = Projects(dte).Select(p => p.ToDictionary()).ToList(); break;
@@ -318,7 +328,11 @@ namespace FastVisualStudioBridge
             if (string.IsNullOrWhiteSpace((string)payload["path"])) path = dte.ActiveDocument?.FullName;
             else path = Resolve(dte, (string)payload["path"], target).path;
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) throw new FileNotFoundException("File was not found inside an open project");
-            var content = File.ReadAllText(path);
+            dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
+            dte.ActiveDocument?.Activate();
+            var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument ?? throw new InvalidOperationException("File is not a text editor");
+            var content = text.StartPoint.CreateEditPoint().GetText(text.EndPoint);
+            BridgeLog.Information("find target opened; path=" + path + "; select=" + ((bool?)payload["select"] ?? false) + "; queryLength=" + query.Length + "; queryFingerprint=" + Fingerprint(query));
             var start = Math.Max(0, Math.Min((int?)payload["startOffset"] ?? 0, content.Length));
             var sensitive = (bool?)payload["caseSensitive"] ?? false;
             var regex = (bool?)payload["regex"] ?? false;
@@ -331,14 +345,35 @@ namespace FastVisualStudioBridge
             }
             else { index = content.IndexOf(query, start, sensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase); length = query.Length; }
             if (index < 0) throw new CommandException("NOT_FOUND", "No match found");
-            dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
-            var text = (TextDocument)dte.ActiveDocument.Object("TextDocument");
-            var a = text.StartPoint.CreateEditPoint(); a.MoveToAbsoluteOffset(index + 1);
-            var b = text.StartPoint.CreateEditPoint(); b.MoveToAbsoluteOffset(index + length + 1);
-            var selection = text.Selection; selection.MoveToPoint(a, false); selection.MoveToPoint(b, (bool?)payload["select"] ?? false);
-            var line = a.Line - 1; var column = a.LineCharOffset - 1;
+            var matchedText = content.Substring(index, length);
+            var matchEqualsQuery = !regex && string.Equals(query, matchedText, sensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+            BridgeLog.Information("find matched; path=" + path + "; startOffset=" + index + "; endOffset=" + (index + length) + "; matchLength=" + matchedText.Length + "; matchFingerprint=" + Fingerprint(matchedText) + "; matchEqualsQuery=" + (regex ? "n/a" : matchEqualsQuery.ToString()));
             FocusMainWindow(dte);
+            var startPosition = TextPositionAtOffset(content, index);
+            var endPosition = TextPositionAtOffset(content, index + length);
+            var selection = text.Selection;
+            selection.MoveToLineAndOffset(startPosition.line + 1, startPosition.column + 1, false);
+            selection.MoveToLineAndOffset(endPosition.line + 1, endPosition.column + 1, (bool?)payload["select"] ?? false);
+            var line = startPosition.line; var column = startPosition.column;
+            var selectedText = selection.Text ?? string.Empty;
+            var selectionEqualsMatch = string.Equals(selectedText, matchedText, StringComparison.Ordinal);
+            BridgeLog.Information("find applied; path=" + path + "; selectionStartOffset=" + (selection.TopPoint.AbsoluteCharOffset - 1) + "; selectionEndOffset=" + (selection.BottomPoint.AbsoluteCharOffset - 1) + "; selectionLength=" + selectedText.Length + "; selectionFingerprint=" + Fingerprint(selectedText) + "; selectionEqualsMatch=" + selectionEqualsMatch + "; editorFocused=" + SnapshotCollector.CurrentEditorOwnsFocus(dte));
+            if (((bool?)payload["select"] ?? false) && !selectionEqualsMatch) throw new CommandException("FIND_SELECTION_MISMATCH", "The editor selection did not match the find result");
             return new Dictionary<string, object> { ["path"] = path, ["startOffset"] = index, ["endOffset"] = index + length, ["line"] = line, ["column"] = column, ["lineNumber"] = line + 1, ["columnNumber"] = column + 1, ["caseSensitive"] = sensitive, ["regex"] = regex, ["selected"] = (bool?)payload["select"] ?? false };
+        }
+
+        private static (int line, int column) TextPositionAtOffset(string content, int offset)
+        {
+            offset = Math.Max(0, Math.Min(offset, content.Length));
+            var line = 0;
+            var lineStart = 0;
+            for (var index = 0; index < offset; index++)
+            {
+                if (content[index] != '\n') continue;
+                line++;
+                lineStart = index + 1;
+            }
+            return (line, offset - lineStart);
         }
 
         private static object RequestFocus(DTE dte)
@@ -397,6 +432,23 @@ namespace FastVisualStudioBridge
             if (!SnapshotCollector.CurrentEditorOwnsFocus(dte)) return FocusedControlSelectedText();
             var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument;
             return text?.Selection?.Text ?? (text == null ? null : string.Empty);
+        }
+
+        private static async Task<string> CurrentSelectedTextAsync(DTE dte, BridgeOptions options, FastBridgePackage package)
+        {
+            await package.JoinableTaskFactory.SwitchToMainThreadAsync();
+            var selectedText = CurrentSelectedText(dte, options);
+            if (selectedText == null || !string.Equals(selectedText, lastSelectedText, StringComparison.Ordinal))
+            {
+                if (selectedText != null) lastSelectedText = selectedText;
+                return selectedText;
+            }
+
+            await Task.Delay(80);
+            await package.JoinableTaskFactory.SwitchToMainThreadAsync();
+            var refreshedText = CurrentSelectedText(dte, options);
+            if (refreshedText != null) lastSelectedText = refreshedText;
+            return refreshedText ?? selectedText;
         }
 
         private static string CurrentLineContent(DTE dte, BridgeOptions options)
@@ -583,7 +635,7 @@ namespace FastVisualStudioBridge
             return false;
         }
 
-        private static void FocusMainWindow(DTE dte) { ThreadHelper.ThrowIfNotOnUIThread(); var hwnd = dte.MainWindow.HWnd; ShowWindow(hwnd, 9); SetForegroundWindow(hwnd); dte.MainWindow.Activate(); }
+        private static void FocusMainWindow(DTE dte) { ThreadHelper.ThrowIfNotOnUIThread(); var hwnd = dte.MainWindow.HWnd; SetForegroundWindow(hwnd); dte.MainWindow.Activate(); }
 
         private static (string path, ProjectInfo project) Resolve(DTE dte, string requested, JObject target)
         {
