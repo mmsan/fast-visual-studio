@@ -28,14 +28,6 @@ namespace FastVisualStudioBridge
             internal CommandException(string code, string message) : base(message) { Code = code; }
         }
 
-        private static string Fingerprint(string value)
-        {
-            using (var sha256 = SHA256.Create())
-            {
-                var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty));
-                return BitConverter.ToString(hash).Replace("-", string.Empty).Substring(0, 16);
-            }
-        }
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern IntPtr GetFocus();
@@ -78,7 +70,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "getContext", "getObjectInfo", "getSelectedText", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
+                ["capabilities"] = new[] { "state", "getInputable", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLineContent", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
             };
         }
 
@@ -332,7 +324,6 @@ namespace FastVisualStudioBridge
             dte.ActiveDocument?.Activate();
             var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument ?? throw new InvalidOperationException("File is not a text editor");
             var content = text.StartPoint.CreateEditPoint().GetText(text.EndPoint);
-            BridgeLog.Information("find target opened; path=" + path + "; select=" + ((bool?)payload["select"] ?? false) + "; queryLength=" + query.Length + "; queryFingerprint=" + Fingerprint(query));
             var start = Math.Max(0, Math.Min((int?)payload["startOffset"] ?? 0, content.Length));
             var sensitive = (bool?)payload["caseSensitive"] ?? false;
             var regex = (bool?)payload["regex"] ?? false;
@@ -346,8 +337,6 @@ namespace FastVisualStudioBridge
             else { index = content.IndexOf(query, start, sensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase); length = query.Length; }
             if (index < 0) throw new CommandException("NOT_FOUND", "No match found");
             var matchedText = content.Substring(index, length);
-            var matchEqualsQuery = !regex && string.Equals(query, matchedText, sensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
-            BridgeLog.Information("find matched; path=" + path + "; startOffset=" + index + "; endOffset=" + (index + length) + "; matchLength=" + matchedText.Length + "; matchFingerprint=" + Fingerprint(matchedText) + "; matchEqualsQuery=" + (regex ? "n/a" : matchEqualsQuery.ToString()));
             FocusMainWindow(dte);
             var startPosition = TextPositionAtOffset(content, index);
             var endPosition = TextPositionAtOffset(content, index + length);
@@ -357,7 +346,6 @@ namespace FastVisualStudioBridge
             var line = startPosition.line; var column = startPosition.column;
             var selectedText = selection.Text ?? string.Empty;
             var selectionEqualsMatch = string.Equals(selectedText, matchedText, StringComparison.Ordinal);
-            BridgeLog.Information("find applied; path=" + path + "; selectionStartOffset=" + (selection.TopPoint.AbsoluteCharOffset - 1) + "; selectionEndOffset=" + (selection.BottomPoint.AbsoluteCharOffset - 1) + "; selectionLength=" + selectedText.Length + "; selectionFingerprint=" + Fingerprint(selectedText) + "; selectionEqualsMatch=" + selectionEqualsMatch + "; editorFocused=" + SnapshotCollector.CurrentEditorOwnsFocus(dte));
             if (((bool?)payload["select"] ?? false) && !selectionEqualsMatch) throw new CommandException("FIND_SELECTION_MISMATCH", "The editor selection did not match the find result");
             return new Dictionary<string, object> { ["path"] = path, ["startOffset"] = index, ["endOffset"] = index + length, ["line"] = line, ["column"] = column, ["lineNumber"] = line + 1, ["columnNumber"] = column + 1, ["caseSensitive"] = sensitive, ["regex"] = regex, ["selected"] = (bool?)payload["select"] ?? false };
         }
@@ -444,11 +432,28 @@ namespace FastVisualStudioBridge
                 return selectedText;
             }
 
-            await Task.Delay(80);
-            await package.JoinableTaskFactory.SwitchToMainThreadAsync();
-            var refreshedText = CurrentSelectedText(dte, options);
-            if (refreshedText != null) lastSelectedText = refreshedText;
-            return refreshedText ?? selectedText;
+            const int pollIntervalMs = 30;
+            const int maxWaitMs = 200;
+            var elapsedMs = 0;
+            while (elapsedMs < maxWaitMs)
+            {
+                var delayMs = Math.Min(pollIntervalMs, maxWaitMs - elapsedMs);
+                await Task.Delay(delayMs);
+                elapsedMs += delayMs;
+                await package.JoinableTaskFactory.SwitchToMainThreadAsync();
+                var refreshedText = CurrentSelectedText(dte, options);
+                if (refreshedText != null && !string.Equals(refreshedText, selectedText, StringComparison.Ordinal))
+                {
+                    lastSelectedText = refreshedText;
+                    return refreshedText;
+                }
+                if (elapsedMs >= maxWaitMs)
+                {
+                    if (refreshedText != null) lastSelectedText = refreshedText;
+                    return refreshedText ?? selectedText;
+                }
+            }
+            return selectedText;
         }
 
         private static string CurrentLineContent(DTE dte, BridgeOptions options)

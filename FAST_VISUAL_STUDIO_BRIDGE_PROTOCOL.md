@@ -51,7 +51,7 @@
 
 `command.queryPythonPackages` accepts `payload.packages` as a batch of import names or `{ "importName", "distributionName" }` objects and queries only the targeted project's configured interpreter. The result includes `interpreter`, `version`, `environmentType`, and a `packages` map.
 
-`command.getSelectedText` actively reads the current editor selection on the Visual Studio UI thread instead of using a cached snapshot. The plugin returns a changed result immediately; when it matches the previous active read, it waits 80 ms, reads again, and returns the latest value. Its successful `data` value is the selected text, an empty string when there is no selection, or `null` when no text editor is available or text sharing is disabled. The Fast-side shortcut is `await f.editorBridge.getCurrentSelectedText()`.
+`command.getSelectedText` actively reads the current editor selection on the Visual Studio UI thread instead of using a cached snapshot. The plugin returns a changed result immediately; when it matches the previous active read, it polls every 30 ms and returns as soon as the value changes, or returns the latest value after 200 ms if it remains unchanged. Its successful `data` value is the selected text, an empty string when there is no selection, or `null` when no text editor is available or text sharing is disabled. The Fast-side shortcut is `await f.editorBridge.getCurrentSelectedText()`.
 
 `command.getInputable` and `command.getObjectInfo` actively read the current state on the Visual Studio UI thread. The Fast-side shortcuts are `await f.editorBridge.getCurrentInputable()` and `await f.editorBridge.getCurrentObjectInfo()`.
 

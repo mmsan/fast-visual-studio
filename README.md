@@ -6,7 +6,7 @@
 
 ## 功能
 
-- 支持 `command.getSelectedText` 主动读取当前编辑器的选中文本，以及 `command.getCurrentLineContent` 读取当前编辑器行内容；选区结果和上次主动读取不同时立即返回，相同时会在 80 毫秒后复读一次并返回最新结果；没有选择时前者返回空字符串，未开启 `SendText` 或没有活动编辑器时返回 `null`。
+- 支持 `command.getSelectedText` 主动读取当前编辑器的选中文本，以及 `command.getCurrentLineContent` 读取当前编辑器行内容；选区结果和上次主动读取不同时立即返回，相同时每隔 30 毫秒复读一次，发现变化便提前返回，始终相同则在 200 毫秒时返回最新结果；没有选择时前者返回空字符串，未开启 `SendText` 或没有活动编辑器时返回 `null`。
 
 - 默认连接 `ws://127.0.0.1:19900`，断线后按 200/500/1000/2000 毫秒重连。
 - 上报 `bridge.hello`、`focus.changed`、`editor.state` 和只在状态变化时发送的 `editor.statusChanged`；不再发送高频的 `editor.caretChanged` 和 `editor.documentChanged`。
