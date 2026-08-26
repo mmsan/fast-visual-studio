@@ -70,7 +70,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLineContent", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages" }
+                ["capabilities"] = new[] { "state", "getInputable", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLineContent", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "shiftHome" }
             };
         }
 
@@ -137,7 +137,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.shiftHome";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -163,6 +163,8 @@ namespace FastVisualStudioBridge
                             case "command.select": data = Navigate(dte, payload, target, true); break;
                             case "command.find": data = Find(dte, payload, target); break;
                             case "command.requestFocus": data = RequestFocus(dte); break;
+                            case "command.ctrlW": data = CtrlW(dte); break;
+                            case "command.shiftHome": data = ShiftHome(dte); break;
                             case "command.fullScreen": data = FullScreen(dte); break;
                             case "command.copyResourcePath": data = CopyResourcePath(dte); break;
                             case "command.queryPythonPackages": data = await QueryPythonPackages(dte, payload, target); break;
@@ -370,6 +372,23 @@ namespace FastVisualStudioBridge
             if (dte.ActiveDocument == null) throw new InvalidOperationException("No active text editor");
             FocusMainWindow(dte); dte.ActiveDocument.Activate();
             return new Dictionary<string, object> { ["project"] = ProjectForFile(dte, dte.ActiveDocument.FullName)?.Name };
+        }
+        private static object CtrlW(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument)) throw new InvalidOperationException("No active text editor");
+            dte.ExecuteCommand("Edit.ExpandSelection");
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+
+        private static object ShiftHome(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument)) throw new InvalidOperationException("No active text editor");
+            dte.ExecuteCommand("Edit.LineStartExtend");
+            dte.ExecuteCommand("Edit.LineStartExtend");
+            return new Dictionary<string, object> { ["handled"] = true };
         }
 
         internal static bool? IsFullScreen(DTE dte)

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
   <Metadata>
-    <Identity Id="FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F" Version="0.1.67" Language="zh-CN" Publisher="Mirror" />
+    <Identity Id="FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F" Version="0.1.80" Language="zh-CN" Publisher="Mirror" />
     <DisplayName>Fast Visual Studio Bridge</DisplayName>
     <Description xml:space="preserve">通过 WebSocket 将 Visual Studio 的焦点、编辑器、光标和选择状态连接到 Fast，并接收安全的导航命令。</Description>
     <Icon>fast.png</Icon>
