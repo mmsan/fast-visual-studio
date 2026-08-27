@@ -96,15 +96,16 @@ namespace FastVisualStudioBridge
                     .FirstOrDefault();
 
                 var current = Assembly.GetExecutingAssembly().GetName().Version;
-                if (candidates == null || candidates.Version <= current || scheduledVersion == candidates.Version.ToString()) return;
+                var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Mirror", "FastVisualStudioBridge", "Updates");
+                if (candidates == null || candidates.Version <= current || scheduledVersion == candidates.Version.ToString() ||
+                    string.Equals(ReadDeclinedVersion(directory), candidates.Version.ToString(), StringComparison.Ordinal)) return;
 
                 var packageUri = new Uri(feedUri, candidates.Source);
                 if (!packageUri.IsLoopback) throw new InvalidOperationException("The update package must use a loopback address.");
                 var bytes = await client.GetByteArrayAsync(packageUri).ConfigureAwait(false);
                 if (bytes.Length < 1024) throw new InvalidDataException("The downloaded VSIX is unexpectedly small.");
 
-                var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Mirror", "FastVisualStudioBridge", "Updates");
                 Directory.CreateDirectory(directory);
                 ownedUpdateLockPath = TryAcquireUpdateLock(directory, candidates.Version);
                 if (ownedUpdateLockPath == null) return;
@@ -125,6 +126,7 @@ namespace FastVisualStudioBridge
                     OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
                 if (answer != (int)VSConstants.MessageBoxResult.IDYES)
                 {
+                    File.WriteAllText(Path.Combine(directory, "declined-version.txt"), candidates.Version.ToString());
                     File.Delete(ownedUpdateLockPath);
                     ownedUpdateLockPath = null;
                     return;
@@ -163,6 +165,13 @@ namespace FastVisualStudioBridge
                 }
             }
             return null;
+        }
+
+        private static string ReadDeclinedVersion(string directory)
+        {
+            try { return File.ReadAllText(Path.Combine(directory, "declined-version.txt")).Trim(); }
+            catch (IOException) { return null; }
+            catch (UnauthorizedAccessException) { return null; }
         }
 
         private static void ScheduleInstaller(string packagePath, Version version, string solutionPath, string updateLockPath)

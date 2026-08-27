@@ -70,7 +70,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLineContent", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "shiftHome" }
+                ["capabilities"] = new[] { "state", "getInputable", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLineContent", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome" }
             };
         }
 
@@ -137,7 +137,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.shiftHome";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -164,6 +164,7 @@ namespace FastVisualStudioBridge
                             case "command.find": data = Find(dte, payload, target); break;
                             case "command.requestFocus": data = RequestFocus(dte); break;
                             case "command.ctrlW": data = CtrlW(dte); break;
+                            case "command.ctrlShiftW": data = CtrlShiftW(dte); break;
                             case "command.shiftHome": data = ShiftHome(dte); break;
                             case "command.fullScreen": data = FullScreen(dte); break;
                             case "command.copyResourcePath": data = CopyResourcePath(dte); break;
@@ -381,13 +382,25 @@ namespace FastVisualStudioBridge
             return new Dictionary<string, object> { ["handled"] = true };
         }
 
+        private static object CtrlShiftW(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument)) throw new InvalidOperationException("No active text editor");
+            dte.ExecuteCommand("Edit.ContractSelection");
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
 
         private static object ShiftHome(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument)) throw new InvalidOperationException("No active text editor");
-            dte.ExecuteCommand("Edit.LineStartExtend");
-            dte.ExecuteCommand("Edit.LineStartExtend");
+            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument text)) throw new InvalidOperationException("No active text editor");
+            var selection = text.Selection;
+            // Do not collapse a selection whose active end already sits at the
+            // beginning of its line when Shift+Home is invoked again.
+            if (selection.ActivePoint.LineCharOffset == 1)
+                return new Dictionary<string, object> { ["handled"] = false };
+            selection.MoveToLineAndOffset(selection.ActivePoint.Line, 1, true);
             return new Dictionary<string, object> { ["handled"] = true };
         }
 
