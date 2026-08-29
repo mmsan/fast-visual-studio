@@ -47,6 +47,8 @@ Use the wrapper for a distributable package:
 .\build-plugin.cmd
 ```
 
+For ordinary code changes, the user prefers source-level validation only. Do not create a VSIX unless the user explicitly asks to build a package, verify a package, publish, install, or release. Use the narrowest relevant compile or syntax check instead.
+
 It uses full-framework Visual Studio MSBuild and defaults to `-UpdateChannel Official`, which disables the built-in loopback updater. It copies the verified VSIX to `dist/FastVisualStudioBridge.vsix`. Use only `Official` or `Local`; `dist` remains Git-ignored.
 
 Keep model-visible verification output concise. Prefer quiet or minimal MSBuild verbosity when the wrapper supports it; otherwise capture the complete wrapper output in a local ignored or temporary log and report only the verified VSIX path, size/hash when available, warning count, elapsed status, and success or failure. Repetitive known analyzer or restoration warnings may be omitted from the model-visible success summary, but retain them in the full log. Always preserve the wrapper's exit code, unexpected warnings, compilation or packaging errors, failed targets, and a short surrounding diagnostic excerpt. Continue to use `.\build-plugin.cmd`; `dotnet build` is not a substitute for package verification.

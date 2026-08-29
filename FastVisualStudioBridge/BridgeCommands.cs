@@ -177,7 +177,10 @@ namespace FastVisualStudioBridge
                     catch (Exception ex) when (type == "command.queryPythonPackages") { await bridge.SendAsync("command.result", Error(type, "PYTHON_QUERY_FAILED", ex.Message), commandId); }
                     catch (FileNotFoundException ex) { await bridge.SendAsync("command.result", Error(type, type == "command.find" ? "FIND_FAILED" : "NAVIGATION_FAILED", ex.Message), commandId); }
                     catch (ArgumentException ex) when (type == "command.find" && (bool?)payload["regex"] == true) { await bridge.SendAsync("command.result", Error(type, "INVALID_QUERY", ex.Message), commandId); }
-                    catch (Exception ex) { await bridge.SendAsync("command.result", Error(type, type == "command.find" ? "FIND_FAILED" : type.StartsWith("command.") ? "NAVIGATION_FAILED" : "INVALID_MESSAGE", ex.Message), commandId); }
+                    catch (Exception ex)
+                    {
+                        await bridge.SendAsync("command.result", Error(type, type == "command.find" ? "FIND_FAILED" : type.StartsWith("command.") ? "NAVIGATION_FAILED" : "INVALID_MESSAGE", ex.Message), commandId);
+                    }
                 });
             }
             catch (Exception ex) { _ = bridge.SendAsync("command.result", Error("unknown", "INVALID_MESSAGE", ex.Message), id); }
@@ -323,8 +326,11 @@ namespace FastVisualStudioBridge
             if (string.IsNullOrWhiteSpace((string)payload["path"])) path = dte.ActiveDocument?.FullName;
             else path = Resolve(dte, (string)payload["path"], target).path;
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) throw new FileNotFoundException("File was not found inside an open project");
-            dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
-            dte.ActiveDocument?.Activate();
+            if (!string.Equals(dte.ActiveDocument?.FullName, path, StringComparison.OrdinalIgnoreCase))
+            {
+                dte.ItemOperations.OpenFile(path, EnvDTE.Constants.vsViewKindTextView);
+                dte.ActiveDocument?.Activate();
+            }
             var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument ?? throw new InvalidOperationException("File is not a text editor");
             var content = text.StartPoint.CreateEditPoint().GetText(text.EndPoint);
             var start = Math.Max(0, Math.Min((int?)payload["startOffset"] ?? 0, content.Length));
@@ -407,6 +413,8 @@ namespace FastVisualStudioBridge
         internal static bool? IsFullScreen(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            var context = KnownUIContexts.FullScreenModeContext;
+            if (!context.IsZombie) return context.IsActive;
             try
             {
                 var command = dte.Commands.Item("View.FullScreen");
@@ -431,7 +439,7 @@ namespace FastVisualStudioBridge
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             var fullScreen = IsFullScreen(dte);
-            if (fullScreen == false)
+            if (fullScreen != true)
             {
                 dte.ExecuteCommand("View.FullScreen");
                 fullScreen = IsFullScreen(dte);
@@ -442,7 +450,8 @@ namespace FastVisualStudioBridge
         private static object IsFullScreenState(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            return new Dictionary<string, object> { ["fullScreen"] = IsFullScreen(dte) };
+            var fullScreen = IsFullScreen(dte);
+            return new Dictionary<string, object> { ["fullScreen"] = fullScreen };
         }
 
         private static string CurrentSelectedText(DTE dte, BridgeOptions options)
@@ -491,15 +500,16 @@ namespace FastVisualStudioBridge
         private static string CurrentLineContent(DTE dte, BridgeOptions options)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            if (!options.SendText) return null;
-            var snapshot = SnapshotCollector.Collect(dte, options);
-            var activeEditor = snapshot["activeEditor"] as IDictionary<string, object>;
-            if (activeEditor == null || !activeEditor.TryGetValue("ownsFocus", out var ownsFocus) ||
-                !Convert.ToBoolean(ownsFocus)) return null;
-            if (!activeEditor.TryGetValue("textContext", out var contextValue) ||
-                !(contextValue is IDictionary<string, object> context) ||
-                !context.TryGetValue("currentLine", out var line)) return null;
-            return line as string ?? string.Empty;
+            if (!options.SendText || !SnapshotCollector.CurrentEditorOwnsFocus(dte)) return null;
+            try
+            {
+                var point = (dte.ActiveDocument?.Object("TextDocument") as TextDocument)?.Selection?.ActivePoint;
+                if (point == null) return null;
+                var start = point.CreateEditPoint(); start.StartOfLine();
+                var end = point.CreateEditPoint(); end.EndOfLine();
+                return start.GetText(end);
+            }
+            catch { return null; }
         }
 
         private static string FocusedControlSelectedText()

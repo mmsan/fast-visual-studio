@@ -20,6 +20,7 @@ namespace FastVisualStudioBridge
         private static readonly TimeSpan SlowReconnectAfter = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan SlowReconnectDelay = TimeSpan.FromSeconds(6);
         private static readonly TimeSpan ConnectionLogInterval = TimeSpan.FromMinutes(1);
+        private static readonly TimeSpan StartupFullscreenWindow = TimeSpan.FromSeconds(8);
         private readonly FastBridgePackage package;
         private readonly DTE dte;
         private readonly BridgeOptions options;
@@ -34,6 +35,7 @@ namespace FastVisualStudioBridge
         private long sequence;
         private string connectionId = Guid.NewGuid().ToString();
         private int connectionFailures;
+        private int startupFullscreenHandshakeSent;
         private readonly object connectionLogGate = new object();
         private readonly Dictionary<string, ConnectionLogState> connectionLogStates = new Dictionary<string, ConnectionLogState>();
         private DateTime reconnectStartedAt;
@@ -240,11 +242,13 @@ namespace FastVisualStudioBridge
                     slowReconnectLogged = false;
                     var failures = connectionFailures;
                     connectionFailures = 0;
+                    var firstBridgeHandshake = Interlocked.CompareExchange(ref startupFullscreenHandshakeSent, 1, 0) == 0;
                     BridgeLog.Information("connected" + (failures > 0 ? "; recoveredAfterFailures=" + failures : ""));
                     await package.JoinableTaskFactory.RunAsync(async () =>
                     {
                         await package.JoinableTaskFactory.SwitchToMainThreadAsync();
-                        var identity = BridgeCommands.Identity(dte, instanceId, connectionId);
+                        var identity = (Dictionary<string, object>)BridgeCommands.Identity(dte, instanceId, connectionId);
+                        if (firstBridgeHandshake) identity["startupFullScreenUntil"] = DateTimeOffset.UtcNow.Add(StartupFullscreenWindow).ToUnixTimeMilliseconds();
                         var snapshot = SnapshotCollector.Collect(dte, options);
                         await SendAsync("bridge.hello", identity, null).ConfigureAwait(false);
                         await SendAsync("editor.state", snapshot, null).ConfigureAwait(false);
