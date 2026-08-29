@@ -47,6 +47,7 @@ namespace FastVisualStudioBridge
         private IWpfTextView activeTextView;
         private System.Threading.Timer debounce;
         private System.Threading.Timer statusDebounce;
+        private long statusScheduleVersion;
         private string lastStatusSignature;
 
         internal string InstanceId => instanceId;
@@ -186,10 +187,13 @@ namespace FastVisualStudioBridge
         private void ScheduleStatus(int delay)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            var version = Interlocked.Increment(ref statusScheduleVersion);
             statusDebounce?.Dispose();
             statusDebounce = new System.Threading.Timer(_ => package.JoinableTaskFactory.RunAsync(async () =>
             {
+                if (version != Volatile.Read(ref statusScheduleVersion)) return;
                 await package.JoinableTaskFactory.SwitchToMainThreadAsync();
+                if (version != Volatile.Read(ref statusScheduleVersion)) return;
                 await SendStatusIfChanged().ConfigureAwait(false);
             }), null, delay, Timeout.Infinite);
         }
@@ -198,14 +202,12 @@ namespace FastVisualStudioBridge
         {
             // This method is also called after an awaited SendAsync during the
             // connection handshake. SendAsync may resume on a thread-pool
-            // thread, while CollectStatus (and all DTE access) must run on the
-            // Visual Studio UI thread.
+            // thread, while UI state access must run on the Visual Studio UI thread.
             await package.JoinableTaskFactory.SwitchToMainThreadAsync();
-            var status = SnapshotCollector.CollectStatus(dte, options);
+            var status = SnapshotCollector.CollectInputStatus(dte);
             var key = new Dictionary<string, object>
             {
-                ["inputable"] = status["inputable"],
-                ["objectInfo"] = status["objectInfo"]
+                ["inputable"] = status["inputable"]
             };
             var signature = JsonConvert.SerializeObject(key);
             if (string.Equals(signature, lastStatusSignature, StringComparison.Ordinal)) return;

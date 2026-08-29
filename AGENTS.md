@@ -17,6 +17,7 @@ Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `BridgeLog.cs` (Activity
 - Default endpoint is `ws://127.0.0.1:19900`; host, port, path, bearer token, auto-connect, text sharing, and context length remain configurable.
 - Mutating commands, including `command.copyResourcePath`, require `target.instanceId` and ignore other instances. The copy command handles one or more selected files/directories in a focused Solution Explorer, returns all absolute paths in `data.paths`, and retains `data.path` for a single selection.
 - Restrict navigation to roots in the open solution/projects. Keep DTE access on the Visual Studio UI thread.
+- Performance: for current-line, selection, caret, and selection-changing hot paths, prefer the cached `IWpfTextView`/text snapshot. Avoid EnvDTE/COM or UI Automation there; they can occupy or wait on the VS UI thread and cause hundreds-of-milliseconds latency spikes.
 - Never log source text or bearer tokens. Keep additions backward compatible with protocol version 1.
 - Keep bridge diagnostics concise, throttle repeated connection failures, and delete plugin log files older than three days.
 

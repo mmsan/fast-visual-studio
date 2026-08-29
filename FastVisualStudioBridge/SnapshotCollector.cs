@@ -55,6 +55,26 @@ namespace FastVisualStudioBridge
             };
         }
 
+        internal static IDictionary<string, object> CollectInputStatus(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var editorOwnsFocus = ActiveEditorOwnsFocus(dte);
+            var focus = DescribeFocus(editorOwnsFocus);
+            object activeEditor = null;
+            if (editorOwnsFocus)
+            {
+                var editor = new Dictionary<string, object> { ["ownsFocus"] = true };
+                try { editor["editable"] = !(dte.ActiveDocument?.ReadOnly ?? true); } catch { }
+                activeEditor = editor;
+            }
+            return new Dictionary<string, object>
+            {
+                ["inputable"] = IsInputable(focus, activeEditor),
+                ["focus"] = focus,
+                ["activeEditor"] = activeEditor
+            };
+        }
+
         internal static bool CurrentInputable(DTE dte, BridgeOptions options)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
@@ -177,6 +197,7 @@ namespace FastVisualStudioBridge
             ThreadHelper.ThrowIfNotOnUIThread();
             try
             {
+                if (FocusedWpfInput() != null) return false;
                 var textView = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
                 if (textView != null && !textView.IsClosed && textView.HasAggregateFocus) return true;
                 var focus = GetFocus();

@@ -23,7 +23,7 @@
 - `bridge.hello`：连接建立后的握手。
 - `editor.state`：初始状态、解决方案或文档切换后的完整快照。
 - `focus.changed`：Visual Studio 活动窗口变化。
-- `editor.statusChanged`：输入能力或当前对象信息变化时发送一次；光标在同一对象内部移动不会产生高频事件。
+- `editor.statusChanged`：输入能力变化时发送一次；它只包含轻量焦点/编辑器状态，完整对象信息通过完整快照或显式查询获取。
 
 快照的 `payload.focus` 描述当前线程拥有焦点的原生窗口控件；`payload.activeEditor` 描述活动文本文件、项目、光标、选择和可选文本上下文。`activeEditor.ownsFocus` 只有在 VS 文本视图实际拥有焦点时才为 `true`；焦点位于 Solution Explorer 时即使仍有活动文档也必须为 `false`。焦点是可编辑文本控件时，`focus.type` 为 `textInput`（编辑器仍为 `editor`），并以 `focus.input.editable` 报告其原生/WPF 可编辑状态。关闭“发送文本”后不发送选择文本或源码上下文。
 
@@ -34,9 +34,12 @@
 - `command.ping`
 - `command.getState`
 - `command.getInputable`
+- `command.isEditorFocused`
 - `command.getContext`
 - `command.getObjectInfo`
 - `command.getSelectedText`
+- `command.getCurrentLine`
+- `command.getCurrentLineContent`
 - `command.isFullScreen`
 - `command.listProjects`
 - `command.navigate`
@@ -46,16 +49,21 @@
 - `command.fullScreen`
 - `command.copyResourcePath`
 - `command.queryPythonPackages`
+- `command.moveUpIfLastLine`
 
-`payload.activeEditor` also carries generic editor context when the host can determine it: `context` is one of `singleQuote`, `doubleQuote`, `backtick`, `braces`, `parentheses`, or `none`; `expressionContext` may contain `expression`, `kind`, `type`, `returnType`, `parameters`, and up to 15 `members`. Visual Studio resolves these fields on a best-effort basis through EnvDTE CodeModel; unresolved fields are omitted rather than guessed. `editor.statusChanged.payload.inputable` is the current inputability, and `editor.statusChanged.payload.objectInfo` is the reduced current-object context.
+`payload.activeEditor` also carries generic editor context when the host can determine it: `context` is one of `singleQuote`, `doubleQuote`, `backtick`, `braces`, `parentheses`, or `none`; `expressionContext` may contain `expression`, `kind`, `type`, `returnType`, `parameters`, and up to 15 `members`. Visual Studio resolves these fields on a best-effort basis through EnvDTE CodeModel; unresolved fields are omitted rather than guessed. `editor.statusChanged.payload.inputable` is the current inputability; rich object context is sent only in complete snapshots or returned by `command.getObjectInfo`.
 
 `command.queryPythonPackages` accepts `payload.packages` as a batch of import names or `{ "importName", "distributionName" }` objects and queries only the targeted project's configured interpreter. The result includes `interpreter`, `version`, `environmentType`, and a `packages` map.
 
-`command.getSelectedText` actively reads the current editor selection on the Visual Studio UI thread instead of using a cached snapshot. The plugin returns a changed result immediately; when it matches the previous active read, it polls every 30 ms and returns as soon as the value changes, or returns the latest value after 200 ms if it remains unchanged. Its successful `data` value is the selected text, an empty string when there is no selection, or `null` when no text editor is available or text sharing is disabled. The Fast-side shortcut is `await f.editorBridge.getCurrentSelectedText()`.
+`command.getSelectedText` actively reads the current editor selection on the Visual Studio UI thread instead of using a cached snapshot, and returns it immediately. Its successful `data` value is the selected text, an empty string when there is no selection, or `null` when no text editor is available or text sharing is disabled. The Fast-side shortcut is `await f.editorBridge.getCurrentSelectedText()`.
 
-`command.getInputable` and `command.getObjectInfo` actively read the current state on the Visual Studio UI thread. The Fast-side shortcuts are `await f.editorBridge.getCurrentInputable()` and `await f.editorBridge.getCurrentObjectInfo()`.
+`command.getCurrentLine` actively reads the current editor caret line on the Visual Studio UI thread and returns its one-based line number, or `null` when no text editor is available. The Fast-side shortcut is `await f.editorBridge.getCurrentLine()`.
+
+`command.getInputable`, `command.isEditorFocused`, and `command.getObjectInfo` actively read the current state on the Visual Studio UI thread. `command.isEditorFocused` returns `true` only when the active text view owns focus. The Fast-side shortcuts are `await f.editorBridge.getCurrentInputable()`, `await f.editorBridge.isEditorFocused()`, and `await f.editorBridge.getCurrentObjectInfo()`.
 
 `command.getContext` actively reads the current syntax context on the Visual Studio UI thread. It returns `singleQuote`, `doubleQuote`, `backtick`, `parentheses`, `braces`, `none`, or `null` when no active editor exists. The Fast-side shortcut is `await f.editorBridge.getCurrentContext()`.
+
+`command.moveUpIfLastLine` requires `target.instanceId`. It clears the active text-view selection and moves its primary caret up one line only when that caret is on the final document line; otherwise it successfully returns `data.handled: false`.
 
 `bridge.hello.payload` 和状态快照包含 `editorOpenedAt`，表示当前编辑器或活动文档打开时间的 Unix 毫秒时间戳；握手 payload 还包含 `fullScreen` 和 `activeProject`。总服务只在握手时执行一次自动全屏判断；打开时间超过 30 秒或缺少字段时跳过，后续选中文件、光标和文档事件不会触发自动全屏。
 

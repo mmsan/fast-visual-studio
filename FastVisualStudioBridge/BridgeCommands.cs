@@ -2,6 +2,7 @@ using EnvDTE;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Microsoft.VisualStudio.Text;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -20,8 +21,6 @@ namespace FastVisualStudioBridge
 {
     internal static class BridgeCommands
     {
-        private static string lastSelectedText;
-
         private sealed class CommandException : Exception
         {
             internal readonly string Code;
@@ -70,23 +69,23 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLineContent", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome" }
+                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "moveUpIfLastLine" }
             };
         }
 
         internal static object Source(DTE dte, string instanceId, string connectionId, object payload)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            var projects = Projects(dte);
             var source = new Dictionary<string, object>
             {
                 ["instanceId"] = instanceId, ["connectionId"] = connectionId,
-                ["projects"] = Projects(dte).Select(p => p.ToDictionary()).ToList()
+                ["projects"] = projects.Select(p => p.ToDictionary()).ToList()
             };
-            source["nativeWindows"] = NativeWindows(dte);
             try
             {
                 var file = dte.ActiveDocument?.FullName;
-                var project = ProjectForFile(dte, file);
+                var project = projects.FirstOrDefault(item => !string.IsNullOrWhiteSpace(file) && IsInside(item.BasePath, file));
                 if (project != null) { source["projectId"] = project.Id; source["projectName"] = project.Name; source["projectBasePath"] = project.BasePath; }
             }
             catch { }
@@ -137,7 +136,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.moveUpIfLastLine";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -153,9 +152,11 @@ namespace FastVisualStudioBridge
                         {
                             case "command.getState": data = SnapshotCollector.Collect(dte, options); break;
                             case "command.getInputable": data = SnapshotCollector.CurrentInputable(dte, options); break;
+                            case "command.isEditorFocused": data = SnapshotCollector.CurrentEditorOwnsFocus(dte); break;
                             case "command.getContext": data = SnapshotCollector.CurrentContext(dte, options); break;
                             case "command.getObjectInfo": data = SnapshotCollector.CurrentObjectInfo(dte, options); break;
-                            case "command.getSelectedText": data = await CurrentSelectedTextAsync(dte, options, package); break;
+                            case "command.getSelectedText": data = CurrentSelectedText(dte, options); break;
+                            case "command.getCurrentLine": data = CurrentLine(dte); break;
                             case "command.getCurrentLineContent": data = CurrentLineContent(dte, options); break;
                             case "command.isFullScreen": data = IsFullScreenState(dte); break;
                             case "command.listProjects": data = Projects(dte).Select(p => p.ToDictionary()).ToList(); break;
@@ -166,6 +167,7 @@ namespace FastVisualStudioBridge
                             case "command.ctrlW": data = CtrlW(dte); break;
                             case "command.ctrlShiftW": data = CtrlShiftW(dte); break;
                             case "command.shiftHome": data = ShiftHome(dte); break;
+                            case "command.moveUpIfLastLine": data = MoveUpIfLastLine(); break;
                             case "command.fullScreen": data = FullScreen(dte); break;
                             case "command.copyResourcePath": data = CopyResourcePath(dte); break;
                             case "command.queryPythonPackages": data = await QueryPythonPackages(dte, payload, target); break;
@@ -400,6 +402,18 @@ namespace FastVisualStudioBridge
         private static object ShiftHome(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view != null && !view.IsClosed && view.HasAggregateFocus)
+            {
+                var active = view.Selection.ActivePoint;
+                var lineStart = active.Position.GetContainingLine().Start;
+                if (active.Position == lineStart)
+                    return new Dictionary<string, object> { ["handled"] = false };
+
+                view.Selection.Select(view.Selection.AnchorPoint, new VirtualSnapshotPoint(lineStart));
+                return new Dictionary<string, object> { ["handled"] = true };
+            }
+
             if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument text)) throw new InvalidOperationException("No active text editor");
             var selection = text.Selection;
             // Do not collapse a selection whose active end already sits at the
@@ -407,6 +421,26 @@ namespace FastVisualStudioBridge
             if (selection.ActivePoint.LineCharOffset == 1)
                 return new Dictionary<string, object> { ["handled"] = false };
             selection.MoveToLineAndOffset(selection.ActivePoint.Line, 1, true);
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+        private static object MoveUpIfLastLine()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view == null || view.IsClosed)
+                return new Dictionary<string, object> { ["handled"] = false };
+
+            var caret = view.Caret.Position.BufferPosition;
+            var line = caret.GetContainingLine();
+            if (line.LineNumber == 0 || Enumerable.Range(line.LineNumber + 1, view.TextSnapshot.LineCount - line.LineNumber - 1)
+                .Any(index => !string.IsNullOrWhiteSpace(view.TextSnapshot.GetLineFromLineNumber(index).GetText())))
+                return new Dictionary<string, object> { ["handled"] = false };
+
+            var previous = view.TextSnapshot.GetLineFromLineNumber(line.LineNumber - 1);
+            var column = Math.Min(caret.Position - line.Start.Position, previous.Length);
+            view.Selection.Clear();
+            view.Caret.MoveTo(new SnapshotPoint(view.TextSnapshot, previous.Start.Position + column));
             return new Dictionary<string, object> { ["handled"] = true };
         }
 
@@ -458,56 +492,44 @@ namespace FastVisualStudioBridge
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             if (!options.SendText) return null;
-            if (!SnapshotCollector.CurrentEditorOwnsFocus(dte)) return FocusedControlSelectedText();
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view != null && !view.IsClosed && view.HasAggregateFocus)
+                return view.Selection.StreamSelectionSpan.GetText();
+
             var text = dte.ActiveDocument?.Object("TextDocument") as TextDocument;
-            return text?.Selection?.Text ?? (text == null ? null : string.Empty);
-        }
-
-        private static async Task<string> CurrentSelectedTextAsync(DTE dte, BridgeOptions options, FastBridgePackage package)
-        {
-            await package.JoinableTaskFactory.SwitchToMainThreadAsync();
-            var selectedText = CurrentSelectedText(dte, options);
-            if (selectedText == null || !string.Equals(selectedText, lastSelectedText, StringComparison.Ordinal))
-            {
-                if (selectedText != null) lastSelectedText = selectedText;
-                return selectedText;
-            }
-
-            const int pollIntervalMs = 30;
-            const int maxWaitMs = 200;
-            var elapsedMs = 0;
-            while (elapsedMs < maxWaitMs)
-            {
-                var delayMs = Math.Min(pollIntervalMs, maxWaitMs - elapsedMs);
-                await Task.Delay(delayMs);
-                elapsedMs += delayMs;
-                await package.JoinableTaskFactory.SwitchToMainThreadAsync();
-                var refreshedText = CurrentSelectedText(dte, options);
-                if (refreshedText != null && !string.Equals(refreshedText, selectedText, StringComparison.Ordinal))
-                {
-                    lastSelectedText = refreshedText;
-                    return refreshedText;
-                }
-                if (elapsedMs >= maxWaitMs)
-                {
-                    if (refreshedText != null) lastSelectedText = refreshedText;
-                    return refreshedText ?? selectedText;
-                }
-            }
-            return selectedText;
+            if (text != null) return text.Selection?.Text ?? string.Empty;
+            return FocusedControlSelectedText();
         }
 
         private static string CurrentLineContent(DTE dte, BridgeOptions options)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            if (!options.SendText || !SnapshotCollector.CurrentEditorOwnsFocus(dte)) return null;
+            if (!options.SendText) return null;
             try
             {
+                var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+                if (view != null && !view.IsClosed && view.HasAggregateFocus)
+                    return view.Caret.Position.BufferPosition.GetContainingLine().GetText();
+
+                if (!SnapshotCollector.CurrentEditorOwnsFocus(dte)) return null;
                 var point = (dte.ActiveDocument?.Object("TextDocument") as TextDocument)?.Selection?.ActivePoint;
                 if (point == null) return null;
                 var start = point.CreateEditPoint(); start.StartOfLine();
                 var end = point.CreateEditPoint(); end.EndOfLine();
                 return start.GetText(end);
+            }
+            catch { return null; }
+        }
+
+        private static int? CurrentLine(DTE dte)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+                if (view != null && !view.IsClosed && view.HasAggregateFocus)
+                    return view.Caret.Position.BufferPosition.GetContainingLine().LineNumber + 1;
+                return (dte.ActiveDocument?.Object("TextDocument") as TextDocument)?.Selection?.ActivePoint?.Line;
             }
             catch { return null; }
         }
