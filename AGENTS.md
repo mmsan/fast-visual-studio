@@ -12,13 +12,14 @@ Fast Visual Studio Bridge is a Visual Studio VSIX that mirrors the Fast editor-b
 
 Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `BridgeLog.cs` (ActivityLog and rolling plugin logs), `SnapshotCollector.cs` (editor state), `BridgeCommands.cs` (identity/commands/path safety), `BridgeOptions.cs` (settings), `LocalUpdateService.cs` (loopback updater), and the protocol/release files.
 
-## Runtime, safety, and compatibility
+## Shared rules
 
-- Default endpoint is `ws://127.0.0.1:19900`; host, port, path, bearer token, auto-connect, text sharing, and context length remain configurable.
-- Mutating commands, including `command.copyResourcePath`, require `target.instanceId` and ignore other instances. The copy command handles one or more selected files/directories in a focused Solution Explorer, returns all absolute paths in `data.paths`, and retains `data.path` for a single selection.
+See `D:\v\fast-idea\AGENTS.md` under **Shared editor-bridge rules**. Do not duplicate shared protocol, focus/search semantics, performance constraints, privacy rules, targeting, reconnect, or cross-plugin synchronization rules here.
+
+## Visual Studio-specific runtime rules
+
 - Restrict navigation to roots in the open solution/projects. Keep DTE access on the Visual Studio UI thread.
-- Performance: for current-line, selection, caret, and selection-changing hot paths, prefer the cached `IWpfTextView`/text snapshot. Avoid EnvDTE/COM or UI Automation there; they can occupy or wait on the VS UI thread and cause hundreds-of-milliseconds latency spikes.
-- Never log source text or bearer tokens. Keep additions backward compatible with protocol version 1.
+- For current-line, selection, caret, and selection-changing hot paths, prefer the cached `IWpfTextView`/text snapshot.
 - Keep bridge diagnostics concise, throttle repeated connection failures, and delete plugin log files older than three days.
 
 ## Plugin log locations (on demand)
@@ -26,16 +27,14 @@ Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `BridgeLog.cs` (Activity
 - Host log: `%APPDATA%\Microsoft\VisualStudio\<instance>\ActivityLog.xml`.
 - Plugin log: the newest `%LOCALAPPDATA%\Mirror\FastVisualStudioBridge\Logs\fast-visual-studio-bridge-YYYY-MM-DD.log`.
 
-## Fast-side synchronization
+## Fast-side changes
 
-The Node.js service is in `D:\v\fast`: `utils/socket-browser.js` (server), `utils/socket-visual-studio.js` (adapter), and `utils/f.mjs` (navigation routing). Any handshake, identity, event, command, or payload change must update the adapter, IntelliJ/VS Code counterparts, affected protocol docs, and README examples. Preserve routing, targeting, path safety, text-sharing, reconnect, and disposal behavior.
-
-Run after Node-side changes:
+Follow the shared rules in `D:\v\fast-idea\AGENTS.md`. Run these checks after Node-side changes:
 
 ```powershell
-node --check D:\v\fast\utils\socket-visual-studio.js
-node --check D:\v\fast\utils\socket-browser.js
-node --check D:\v\fast\utils\f.mjs
+node --check D:\v\fastjs\utils\socket-visual-studio.js
+node --check D:\v\fastjs\utils\socket-browser.js
+node --check D:\v\fastjs\utils\f.mjs
 ```
 
 For a shared change, verify all three installable packages with their repository procedures; `dotnet build` alone is not package verification.
@@ -83,7 +82,7 @@ The workflow must:
 
 Use `-NoVersionBump` only to retry an interrupted/manual version bump. Updates require the stable VSIX ID and a strictly higher manifest version.
 
-For a coordinated release, use the highest current version across IDEA, Visual Studio, and VS Code, increment the patch component once, write that exact version to the VSIX manifest, `AssemblyInfo.cs`, IDEA `gradle.properties`, VS Code `package.json`/`package-lock.json`, and `D:\v\fast\bridge-version.json` when maintained. Then run this publisher with `-NoVersionBump`; do not independently bump Visual Studio. Verify the Atom feed `<Vsix><Version>` and `<content src>` point to the shared-version VSIX.
+For a coordinated release, use the highest current version across IDEA, Visual Studio, and VS Code, increment the patch component once, write that exact version to the VSIX manifest, `AssemblyInfo.cs`, IDEA `gradle.properties`, VS Code `package.json`/`package-lock.json`, and `D:\v\fastjs\bridge-version.json` when maintained. Then run this publisher with `-NoVersionBump`; do not independently bump Visual Studio. Verify the Atom feed `<Vsix><Version>` and `<content src>` point to the shared-version VSIX.
 
 Users add the feed under **Tools | Options | Environment | Extensions | Additional Extension Galleries** and enable automatic checks/installation. Local-channel builds use their built-in updater instead.
 
@@ -92,5 +91,5 @@ Community may lack custom galleries, so preserve the built-in updater: it checks
 ## Change discipline
 
 - Preserve settings and defaults for older state; update protocol/docs after externally visible changes.
-- Do not log source text, selections, passwords, or credentials; keep callbacks non-blocking.
 - Dispose listeners, timers, sockets, and helpers. Do not overwrite a loaded VSIX; use the supported publish/install flow.
+- For all other bridge behavior, follow `D:\v\fast-idea\AGENTS.md`.

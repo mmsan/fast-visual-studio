@@ -49,6 +49,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Atom Feed generation failed with exit code $LASTEXITCODE" }
         $generatedFeedPath = Join-Path $feedWork 'AtomFeed.xml'
         [xml]$generatedFeed = [System.IO.File]::ReadAllText($generatedFeedPath, [System.Text.Encoding]::UTF8)
+        $feedEntry = $generatedFeed.SelectSingleNode("/*[local-name()='feed']/*[local-name()='entry']")
+        $feedVersion = $feedEntry.SelectSingleNode("*[local-name()='Vsix']/*[local-name()='Version']").InnerText
+        $feedSource = $feedEntry.SelectSingleNode("*[local-name()='content']").GetAttribute('src')
+        if ($feedVersion -ne $newVersion.ToString(3) -or $feedSource -ne $publishedName) {
+            throw "Atom Feed metadata mismatch: version=$feedVersion, source=$feedSource, expected version=$($newVersion.ToString(3)), source=$publishedName"
+        }
         $iconLink = $generatedFeed.SelectSingleNode("/*[local-name()='feed']/*[local-name()='entry']/*[local-name()='link'][@rel='icon']")
         if ($iconLink -and $iconLink.href) {
             $iconLink.href = [System.IO.Path]::GetFileName($iconLink.href)

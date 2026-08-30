@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.ComponentModelHost;
 using Microsoft.VisualStudio.Editor;
+using Microsoft.VisualStudio.Text.Operations;
 using Microsoft.VisualStudio.TextManager.Interop;
 
 namespace FastVisualStudioBridge
@@ -25,6 +26,7 @@ namespace FastVisualStudioBridge
         internal static FastBridgePackage Instance { get; private set; }
         internal DTE Dte { get; private set; }
         internal BridgeService Bridge { get; private set; }
+        internal IEditorOperationsFactoryService EditorOperations { get; private set; }
         internal LocalUpdateService Updater { get; private set; }
 
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
@@ -36,6 +38,7 @@ namespace FastVisualStudioBridge
             var textManager = (IVsTextManager)await GetServiceAsync(typeof(SVsTextManager));
             var componentModel = (IComponentModel)await GetServiceAsync(typeof(SComponentModel));
             var editorAdapters = componentModel?.GetService<IVsEditorAdaptersFactoryService>();
+            EditorOperations = componentModel?.GetService<IEditorOperationsFactoryService>();
             var options = (BridgeOptions)GetDialogPage(typeof(BridgeOptions));
             Bridge = new BridgeService(this, dte, options, textManager, editorAdapters);
             Bridge.Start();

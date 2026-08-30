@@ -69,7 +69,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "moveUpIfLastLine" }
+                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "shiftDown", "shiftUp", "moveUpIfLastLine" }
             };
         }
 
@@ -136,7 +136,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.moveUpIfLastLine";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -163,10 +163,14 @@ namespace FastVisualStudioBridge
                             case "command.navigate": data = Navigate(dte, payload, target, false); break;
                             case "command.select": data = Navigate(dte, payload, target, true); break;
                             case "command.find": data = Find(dte, payload, target); break;
+                            case "command.deleteSelection": data = DeleteSelection(dte, payload); break;
                             case "command.requestFocus": data = RequestFocus(dte); break;
                             case "command.ctrlW": data = CtrlW(dte); break;
                             case "command.ctrlShiftW": data = CtrlShiftW(dte); break;
                             case "command.shiftHome": data = ShiftHome(dte); break;
+                            case "command.home": data = Home(); break;
+                            case "command.shiftDown": data = ShiftDirection(payload, 1); break;
+                            case "command.shiftUp": data = ShiftDirection(payload, -1); break;
                             case "command.moveUpIfLastLine": data = MoveUpIfLastLine(); break;
                             case "command.fullScreen": data = FullScreen(dte); break;
                             case "command.copyResourcePath": data = CopyResourcePath(dte); break;
@@ -398,6 +402,32 @@ namespace FastVisualStudioBridge
             return new Dictionary<string, object> { ["handled"] = true };
         }
 
+        private static object DeleteSelection(DTE dte, JObject payload)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var expectedText = (string)payload["expectedText"] ?? throw new ArgumentException("payload.expectedText is required");
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view != null && !view.IsClosed && view.HasAggregateFocus)
+            {
+                var span = view.Selection.StreamSelectionSpan;
+                if (!string.Equals(span.GetText(), expectedText, StringComparison.Ordinal))
+                    return new Dictionary<string, object> { ["handled"] = true, ["matched"] = false, ["deleted"] = false };
+                using (var edit = view.TextBuffer.CreateEdit())
+                {
+                    edit.Delete(span.SnapshotSpan);
+                    edit.Apply();
+                }
+                return new Dictionary<string, object> { ["handled"] = true, ["matched"] = true, ["deleted"] = true };
+            }
+
+            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument text)) throw new InvalidOperationException("No active text editor");
+            var selection = text.Selection;
+            if (!string.Equals(selection.Text ?? string.Empty, expectedText, StringComparison.Ordinal))
+                return new Dictionary<string, object> { ["handled"] = true, ["matched"] = false, ["deleted"] = false };
+            selection.Delete();
+            return new Dictionary<string, object> { ["handled"] = true, ["matched"] = true, ["deleted"] = true };
+        }
+
 
         private static object ShiftHome(DTE dte)
         {
@@ -421,6 +451,36 @@ namespace FastVisualStudioBridge
             if (selection.ActivePoint.LineCharOffset == 1)
                 return new Dictionary<string, object> { ["handled"] = false };
             selection.MoveToLineAndOffset(selection.ActivePoint.Line, 1, true);
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+        /// <summary>Moves the active caret to the logical line start without selecting text.</summary>
+        private static object Home()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view == null || view.IsClosed || !view.HasAggregateFocus) throw new InvalidOperationException("No active text editor");
+            var start = view.Selection.ActivePoint.Position.GetContainingLine().Start;
+            view.Selection.Clear();
+            view.Caret.MoveTo(start);
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+        /// <summary>Extends the active selection by logical document lines, ignoring soft wraps.</summary>
+        private static object ShiftDirection(JObject payload, int direction)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view == null || view.IsClosed || !view.HasAggregateFocus) throw new InvalidOperationException("No active text editor");
+            var operations = FastBridgePackage.Instance?.EditorOperations?.GetEditorOperations(view);
+            if (operations == null) throw new InvalidOperationException("No active text editor");
+            var active = view.Selection.ActivePoint.Position;
+            var current = active.GetContainingLine();
+            var count = Math.Max(1, payload.Value<int?>("count") ?? 1);
+            var line = Math.Max(0, Math.Min(view.TextSnapshot.LineCount - 1, current.LineNumber + direction * count));
+            var targetLine = view.TextSnapshot.GetLineFromLineNumber(line);
+            var target = new SnapshotPoint(view.TextSnapshot, targetLine.Start.Position + Math.Min(active.Position - current.Start.Position, targetLine.Length));
+            operations.SelectAndMoveCaret(view.Selection.AnchorPoint, new VirtualSnapshotPoint(target));
             return new Dictionary<string, object> { ["handled"] = true };
         }
 

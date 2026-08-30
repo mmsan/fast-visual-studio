@@ -45,10 +45,14 @@
 - `command.navigate`
 - `command.select`
 - `command.find`
+- `command.deleteSelection`
 - `command.requestFocus`
 - `command.fullScreen`
 - `command.copyResourcePath`
 - `command.queryPythonPackages`
+- `command.home`
+- `command.shiftDown`
+- `command.shiftUp`
 - `command.moveUpIfLastLine`
 
 `payload.activeEditor` also carries generic editor context when the host can determine it: `context` is one of `singleQuote`, `doubleQuote`, `backtick`, `braces`, `parentheses`, or `none`; `expressionContext` may contain `expression`, `kind`, `type`, `returnType`, `parameters`, and up to 15 `members`. Visual Studio resolves these fields on a best-effort basis through EnvDTE CodeModel; unresolved fields are omitted rather than guessed. `editor.statusChanged.payload.inputable` is the current inputability; rich object context is sent only in complete snapshots or returned by `command.getObjectInfo`.
@@ -63,7 +67,11 @@
 
 `command.getContext` actively reads the current syntax context on the Visual Studio UI thread. It returns `singleQuote`, `doubleQuote`, `backtick`, `parentheses`, `braces`, `none`, or `null` when no active editor exists. The Fast-side shortcut is `await f.editorBridge.getCurrentContext()`.
 
+`command.home` clears the active selection and moves its caret to the logical document-line start. `command.shiftDown` and `command.shiftUp` extend the selection by logical document lines; `payload.count` is optional and defaults to `1`. These commands use the active text view's native select-and-move-caret operation, so soft wrapping does not consume movement steps.
+
 `command.moveUpIfLastLine` requires `target.instanceId`. It clears the active text-view selection and moves its primary caret up one line only when that caret is on the final document line; otherwise it successfully returns `data.handled: false`.
+
+`command.deleteSelection` requires `target.instanceId` and `payload.expectedText`. Visual Studio deletes the current editor selection only when its text exactly matches the expected text. A mismatch is a successful no-op with `data.handled: true`, `data.matched: false`, and `data.deleted: false`.
 
 `bridge.hello.payload` 和状态快照包含 `editorOpenedAt`，表示当前编辑器或活动文档打开时间的 Unix 毫秒时间戳；握手 payload 还包含 `fullScreen` 和 `activeProject`。总服务只在握手时执行一次自动全屏判断；打开时间超过 30 秒或缺少字段时跳过，后续选中文件、光标和文档事件不会触发自动全屏。
 
