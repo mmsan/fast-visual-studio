@@ -1,35 +1,33 @@
 # Fast Visual Studio Bridge — Agent Guide
 
-## Stable identity and scope
+## Scope and identity
 
-Fast Visual Studio Bridge is a Visual Studio VSIX that mirrors the Fast editor-bridge protocol over the local WebSocket service.
-
-- Display name: `Fast Visual Studio Bridge`
+- Visual Studio VSIX that mirrors the Fast editor-bridge protocol over the local WebSocket service.
 - VSIX ID: `FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F` — never change it; updates require this stable ID.
 - Package GUID: `27861355-a640-4497-911a-ea99b558e93f`
 - Handshake client: `fast-visual-studio-bridge` — keep it stable.
 - Target: Visual Studio 2022 (17.x) and 2026 (18.x), .NET Framework 4.7.2.
 
-Key surfaces: `BridgeService.cs` (WebSocket/lifecycle), `BridgeLog.cs` (ActivityLog and rolling plugin logs), `SnapshotCollector.cs` (editor state), `BridgeCommands.cs` (identity/commands/path safety), `BridgeOptions.cs` (settings), `LocalUpdateService.cs` (loopback updater), and the protocol/release files.
+Key files: `BridgeService.cs`, `BridgeLog.cs`, `SnapshotCollector.cs`, `BridgeCommands.cs`, `BridgeOptions.cs`, `LocalUpdateService.cs`, and the protocol/release files.
 
-## Shared rules
+## Shared bridge rules
 
-See `D:\v\fast-idea\AGENTS.md` under **Shared editor-bridge rules**. Do not duplicate shared protocol, focus/search semantics, performance constraints, privacy rules, targeting, reconnect, or cross-plugin synchronization rules here.
+Follow `D:\v\fast-idea\AGENTS.md`; do not copy shared protocol, targeting, focus/search, performance, privacy, reconnect, or synchronization rules here.
 
-## Visual Studio-specific runtime rules
+## Visual Studio-specific rules
 
 - Restrict navigation to roots in the open solution/projects. Keep DTE access on the Visual Studio UI thread.
 - For current-line, selection, caret, and selection-changing hot paths, prefer the cached `IWpfTextView`/text snapshot.
-- Keep bridge diagnostics concise, throttle repeated connection failures, and delete plugin log files older than three days.
+- Keep bridge diagnostics concise, throttle repeated connection failures, and delete plugin logs older than three days.
 
-## Plugin log locations (on demand)
+## Logs
 
 - Host log: `%APPDATA%\Microsoft\VisualStudio\<instance>\ActivityLog.xml`.
 - Plugin log: the newest `%LOCALAPPDATA%\Mirror\FastVisualStudioBridge\Logs\fast-visual-studio-bridge-YYYY-MM-DD.log`.
 
-## Fast-side changes
+## Validation
 
-Follow the shared rules in `D:\v\fast-idea\AGENTS.md`. Run these checks after Node-side changes:
+After Node-side changes, run:
 
 ```powershell
 node --check D:\v\fastjs\utils\socket-visual-studio.js
@@ -37,56 +35,29 @@ node --check D:\v\fastjs\utils\socket-browser.js
 node --check D:\v\fastjs\utils\f.mjs
 ```
 
-For a shared change, verify all three installable packages with their repository procedures; `dotnet build` alone is not package verification.
+For shared changes, verify all three installable packages with their repository procedures; `dotnet build` alone is insufficient.
 
-## Build and package verification
-
-Use the wrapper for a distributable package:
+For package verification, use the wrapper:
 
 ```powershell
 .\build-plugin.cmd
 ```
 
-For ordinary code changes, the user prefers source-level validation only. Do not create a VSIX unless the user explicitly asks to build a package, verify a package, publish, install, or release. Use the narrowest relevant compile or syntax check instead.
+For ordinary code changes, use source-level checks only. Build a VSIX only for packaging, verification, publishing, installation, or release.
 
-It uses full-framework Visual Studio MSBuild and defaults to `-UpdateChannel Official`, which disables the built-in loopback updater. It copies the verified VSIX to `dist/FastVisualStudioBridge.vsix`. Use only `Official` or `Local`; `dist` remains Git-ignored.
+`build-plugin.cmd` uses full-framework MSBuild, defaults to `-UpdateChannel Official`, and copies the verified package to `dist/FastVisualStudioBridge.vsix`; use only `Official` or `Local`.
 
-Keep model-visible verification output concise. Prefer quiet or minimal MSBuild verbosity when the wrapper supports it; otherwise capture the complete wrapper output in a local ignored or temporary log and report only the verified VSIX path, size/hash when available, warning count, elapsed status, and success or failure. Repetitive known analyzer or restoration warnings may be omitted from the model-visible success summary, but retain them in the full log. Always preserve the wrapper's exit code, unexpected warnings, compilation or packaging errors, failed targets, and a short surrounding diagnostic excerpt. Continue to use `.\build-plugin.cmd`; `dotnet build` is not a substitute for package verification.
+Keep verification output concise, but preserve exit codes, failures, unexpected warnings, and relevant diagnostics. `dotnet build` is not package verification.
 
-## Local update publishing
+## Local publication and updater
 
-Local publication is an explicit user-authorized action, not a default verification step. After ordinary code changes, only build and verify the VSIX (use the appropriate local update channel when validating updater code). Do not update the local gallery, bump a release solely for publication, or run `publish-local-plugin.cmd` unless the user explicitly asks to publish locally, release a version, or uses equivalent wording. A request to modify, fix, build, test, or verify does not authorize publication.
-
-The private gallery is normally `D:\docker\www\vs-extensions`, served at:
-
-```text
-http://127.0.0.1:8800/vs-extensions/AtomFeed.xml
-```
-
-Publish with:
-
-```powershell
-.\publish-local-plugin.cmd
-```
-
-This wrapper must build with `-UpdateChannel Local`; never upload that artifact to the official Marketplace. Official builds use the default `Official` channel and rely on Visual Studio for updates.
-
-The workflow must:
-
-1. Read `source.extension.vsixmanifest` and increment its patch version unless `-NoVersionBump` is supplied.
-2. Keep `AssemblyVersion` and `AssemblyFileVersion` synchronized; restore all version files on failure.
-3. Build the Release VSIX via `build-plugin.ps1` and copy the versioned file to the gallery.
-4. Locate `VsixUtil.exe` from the restored `Microsoft.VSSDK.BuildTools` package.
-5. Generate `AtomFeed.xml` from only the new VSIX in an isolated temporary directory, replace the feed, and keep old VSIX files for rollback.
-6. Verify the HTTP feed when possible; if Nginx is stopped, warn without discarding a valid local publication.
-
-Use `-NoVersionBump` only to retry an interrupted/manual version bump. Updates require the stable VSIX ID and a strictly higher manifest version.
-
-For a coordinated release, use the highest current version across IDEA, Visual Studio, and VS Code, increment the patch component once, write that exact version to the VSIX manifest, `AssemblyInfo.cs`, IDEA `gradle.properties`, VS Code `package.json`/`package-lock.json`, and `D:\v\fastjs\bridge-version.json` when maintained. Then run this publisher with `-NoVersionBump`; do not independently bump Visual Studio. Verify the Atom feed `<Vsix><Version>` and `<content src>` point to the shared-version VSIX.
-
-Users add the feed under **Tools | Options | Environment | Extensions | Additional Extension Galleries** and enable automatic checks/installation. Local-channel builds use their built-in updater instead.
-
-Community may lack custom galleries, so preserve the built-in updater: it checks the loopback feed about 10 seconds after startup and at a configurable interval (default and minimum 10 seconds), accepts only the stable ID and newer version, requires loopback feed/package URLs, and downloads under `%LocalAppData%\Mirror\FastVisualStudioBridge\Updates`. A cross-process atomic lock permits only one pending helper across all IDE instances. After download, it prompts the user to restart; only confirmation schedules installation and requests a normal close of every `devenv` window (preserving save prompts). The helper waits up to 10 seconds, force-stops only remaining headless `devenv` processes, directly upgrades the stable ID with `VSIXInstaller.exe` (without a separate uninstall), waits briefly for setup finalization, and relaunches the originating IDE with its previous solution. If that launch remains headless for 15 seconds, terminate only that headless process and retry once. Never force-kill a process that still owns a main window, execute feed-supplied commands, or weaken the loopback restriction.
+- Publication, installation, gallery updates, and version bumps require explicit authorization. Ordinary changes use source-level checks; package verification uses `build-plugin.cmd`.
+- The private gallery is normally `D:\docker\www\vs-extensions`, served at `http://127.0.0.1:8800/vs-extensions/AtomFeed.xml`.
+- Run `publish-local-plugin.cmd` for a local release. It uses `-UpdateChannel Local`, keeps manifest and assembly versions synchronized, restores version files on failure, builds the Release VSIX, updates the feed from the new package, retains old packages for rollback, and verifies the feed when possible. Use `-NoVersionBump` only for retries.
+- Coordinated releases use the highest plugin version, bump once, update every version file, publish IDEA → Visual Studio → VS Code with `-NoVersionBump`, and verify all artifacts and feeds share that version. Follow `D:\v\fastjs\AGENTS.md`; do not independently bump Visual Studio.
+- Preserve the built-in updater: loopback feed/package URLs only, stable ID plus newer version, configurable interval with a 10-second minimum, and downloads under `%LocalAppData%\Mirror\FastVisualStudioBridge\Updates`. Use one cross-process update lock.
+- After user confirmation, request a normal close and preserve save prompts. Force-stop only remaining headless `devenv` processes; upgrade the stable ID directly, relaunch the originating solution, retry once after a 15-second headless launch, and never execute feed-supplied commands or weaken loopback checks.
+- Users add the feed under **Tools | Options | Environment | Extensions | Additional Extension Galleries**. Local-channel builds use the built-in updater.
 
 ## Change discipline
 

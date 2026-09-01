@@ -115,6 +115,7 @@ namespace FastVisualStudioBridge
         }
         private void OnSolutionChanged()
         {
+            BridgeCommands.InvalidateProjectCache();
             ScheduleSnapshot("editor.state", 50);
             ScheduleStatus(50);
         }

@@ -21,6 +21,8 @@ namespace FastVisualStudioBridge
 {
     internal static class BridgeCommands
     {
+        private static List<ProjectInfo> projectCache;
+
         private sealed class CommandException : Exception
         {
             internal readonly string Code;
@@ -69,7 +71,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "shiftDown", "shiftUp", "moveUpIfLastLine" }
+                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "end", "inputTop", "shiftDown", "shiftUp", "moveUpIfLastLine" }
             };
         }
 
@@ -136,7 +138,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.end" || type == "command.inputTop" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -169,6 +171,8 @@ namespace FastVisualStudioBridge
                             case "command.ctrlShiftW": data = CtrlShiftW(dte); break;
                             case "command.shiftHome": data = ShiftHome(dte); break;
                             case "command.home": data = Home(); break;
+                            case "command.end": data = End(); break;
+                            case "command.inputTop": data = InputTop(payload); break;
                             case "command.shiftDown": data = ShiftDirection(payload, 1); break;
                             case "command.shiftUp": data = ShiftDirection(payload, -1); break;
                             case "command.moveUpIfLastLine": data = MoveUpIfLastLine(); break;
@@ -464,6 +468,82 @@ namespace FastVisualStudioBridge
             view.Selection.Clear();
             view.Caret.MoveTo(start);
             return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+        /// <summary>Moves the active caret to the logical document-line end without selecting text.</summary>
+        private static object End()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view == null || view.IsClosed || !view.HasAggregateFocus) throw new InvalidOperationException("No active text editor");
+            var end = view.Selection.ActivePoint.Position.GetContainingLine().End;
+            view.Selection.Clear();
+            view.Caret.MoveTo(end);
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+        /// <summary>Inserts text above the first non-comment line without touching the caret or selection.</summary>
+        private static object InputTop(JObject payload)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var code = (string)payload["code"];
+            if (string.IsNullOrEmpty(code)) throw new ArgumentException("payload.code is required");
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view == null || view.IsClosed || !view.HasAggregateFocus) throw new InvalidOperationException("No active text editor");
+            var snapshot = view.TextBuffer.CurrentSnapshot;
+            var firstLine = snapshot.GetLineFromLineNumber(0);
+            var lineBreak = firstLine.LineBreakLength == 0 ? null : snapshot.GetText(firstLine.End.Position, firstLine.LineBreakLength);
+            if (string.IsNullOrEmpty(lineBreak)) lineBreak = Environment.NewLine;
+            var text = snapshot.GetText();
+            var offset = InputTopOffset(text, view.TextBuffer.ContentType?.TypeName?.IndexOf("Python", StringComparison.OrdinalIgnoreCase) >= 0);
+            var prefix = offset > 0 && text[offset - 1] != '\r' && text[offset - 1] != '\n' ? lineBreak : "";
+            using (var edit = view.TextBuffer.CreateEdit())
+            {
+                edit.Insert(offset, prefix + code + lineBreak);
+                edit.Apply();
+            }
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+        private static int InputTopOffset(string text, bool python)
+        {
+            var offset = 0;
+            var blockComment = false;
+            while (offset < text.Length)
+            {
+                var lineEnd = text.IndexOf('\n', offset);
+                var contentEnd = lineEnd < 0 ? text.Length : lineEnd;
+                var line = text.Substring(offset, contentEnd - offset).TrimEnd('\r');
+                var trimmed = line.Trim();
+                if (blockComment)
+                {
+                    var close = trimmed.IndexOf("*/", StringComparison.Ordinal);
+                    if (close < 0) { offset = lineEnd < 0 ? text.Length : lineEnd + 1; continue; }
+                    blockComment = false;
+                    trimmed = trimmed.Substring(close + 2).Trim();
+                    if (trimmed.Length == 0 || trimmed.StartsWith("//", StringComparison.Ordinal) || (python && trimmed.StartsWith("#", StringComparison.Ordinal)))
+                    {
+                        offset = lineEnd < 0 ? text.Length : lineEnd + 1;
+                        continue;
+                    }
+                    return offset;
+                }
+                if (trimmed.StartsWith("//", StringComparison.Ordinal) || (python && trimmed.StartsWith("#", StringComparison.Ordinal)))
+                {
+                    offset = lineEnd < 0 ? text.Length : lineEnd + 1;
+                    continue;
+                }
+                if (trimmed.StartsWith("/*", StringComparison.Ordinal))
+                {
+                    var close = trimmed.IndexOf("*/", 2, StringComparison.Ordinal);
+                    if (close < 0) blockComment = true;
+                    else if (trimmed.Substring(close + 2).Trim().Length > 0) return offset;
+                    offset = lineEnd < 0 ? text.Length : lineEnd + 1;
+                    continue;
+                }
+                return offset;
+            }
+            return offset;
         }
 
         /// <summary>Extends the active selection by logical document lines, ignoring soft wraps.</summary>
@@ -786,6 +866,7 @@ namespace FastVisualStudioBridge
         internal static List<ProjectInfo> Projects(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            if (projectCache != null) return projectCache;
             var result = new List<ProjectInfo>();
             try
             {
@@ -800,8 +881,10 @@ namespace FastVisualStudioBridge
                 if (!string.IsNullOrWhiteSpace(solution)) Add(result, Path.GetFileNameWithoutExtension(solution), Path.GetDirectoryName(solution));
             }
             catch { }
-            return result.GroupBy(p => p.BasePath, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+            return projectCache = result.GroupBy(p => p.BasePath, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
         }
+
+        internal static void InvalidateProjectCache() { projectCache = null; }
 
         private static void Add(List<ProjectInfo> list, string name, string root) { root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar); list.Add(new ProjectInfo { Id = ProjectId(root), Name = name, BasePath = root }); }
         internal static string RelativePath(string root, string path) => new Uri(root.TrimEnd('\\', '/') + Path.DirectorySeparatorChar).MakeRelativeUri(new Uri(path)).ToString().Replace('/', Path.DirectorySeparatorChar);
