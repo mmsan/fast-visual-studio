@@ -46,6 +46,7 @@
 - `command.select`
 - `command.find`
 - `command.deleteSelection`
+- `command.input`
 - `command.requestFocus`
 - `command.fullScreen`
 - `command.copyResourcePath`
@@ -74,6 +75,8 @@
 `command.moveUpIfLastLine` requires `target.instanceId`. It clears the active text-view selection and moves its primary caret up one line only when that caret is on the final document line; otherwise it successfully returns `data.handled: false`.
 
 `command.deleteSelection` requires `target.instanceId` and `payload.expectedText`. Visual Studio deletes the current editor selection only when its text exactly matches the expected text. A mismatch is a successful no-op with `data.handled: true`, `data.matched: false`, and `data.deleted: false`.
+
+`command.input` requires `target.instanceId` and `payload.text`. It inserts the text at the active caret, replacing the active selection when present. An empty text value deletes the active selection.
 
 `bridge.hello.payload` 和状态快照包含 `editorOpenedAt`，表示当前编辑器或活动文档打开时间的 Unix 毫秒时间戳；握手 payload 还包含 `fullScreen` 和 `activeProject`。总服务只在握手时执行一次自动全屏判断；打开时间超过 30 秒或缺少字段时跳过，后续选中文件、光标和文档事件不会触发自动全屏。
 

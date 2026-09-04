@@ -71,7 +71,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "end", "inputTop", "shiftDown", "shiftUp", "moveUpIfLastLine" }
+                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "input", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "end", "inputTop", "shiftDown", "shiftUp", "moveUpIfLastLine" }
             };
         }
 
@@ -138,7 +138,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.end" || type == "command.inputTop" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.input" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.end" || type == "command.inputTop" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -166,6 +166,7 @@ namespace FastVisualStudioBridge
                             case "command.select": data = Navigate(dte, payload, target, true); break;
                             case "command.find": data = Find(dte, payload, target); break;
                             case "command.deleteSelection": data = DeleteSelection(dte, payload); break;
+                            case "command.input": data = Input(dte, payload); break;
                             case "command.requestFocus": data = RequestFocus(dte); break;
                             case "command.ctrlW": data = CtrlW(dte); break;
                             case "command.ctrlShiftW": data = CtrlShiftW(dte); break;
@@ -430,6 +431,32 @@ namespace FastVisualStudioBridge
                 return new Dictionary<string, object> { ["handled"] = true, ["matched"] = false, ["deleted"] = false };
             selection.Delete();
             return new Dictionary<string, object> { ["handled"] = true, ["matched"] = true, ["deleted"] = true };
+        }
+
+        private static object Input(DTE dte, JObject payload)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var text = (string)payload["text"];
+            if (text == null) throw new ArgumentException("payload.text is required");
+
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            if (view != null && !view.IsClosed && view.HasAggregateFocus)
+            {
+                var span = view.Selection.StreamSelectionSpan;
+                using (var edit = view.TextBuffer.CreateEdit())
+                {
+                    edit.Replace(span.SnapshotSpan, text);
+                    edit.Apply();
+                }
+                var snapshot = view.TextBuffer.CurrentSnapshot;
+                view.Selection.Clear();
+                view.Caret.MoveTo(new SnapshotPoint(snapshot, span.Start.Position + text.Length));
+                return new Dictionary<string, object> { ["handled"] = true };
+            }
+
+            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument document)) throw new InvalidOperationException("No active text editor");
+            document.Selection.Insert(text);
+            return new Dictionary<string, object> { ["handled"] = true };
         }
 
 
