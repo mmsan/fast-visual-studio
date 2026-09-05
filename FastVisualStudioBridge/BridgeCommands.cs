@@ -212,11 +212,15 @@ namespace FastVisualStudioBridge
                 selection.MoveToLineAndOffset(Math.Max(1, ((int?)start["line"] ?? coordinateBase) - coordinateBase + 1), Math.Max(1, ((int?)start["column"] ?? coordinateBase) - coordinateBase + 1), false);
                 selection.MoveToLineAndOffset(Math.Max(1, ((int?)end["line"] ?? coordinateBase) - coordinateBase + 1), Math.Max(1, ((int?)end["column"] ?? coordinateBase) - coordinateBase + 1), true);
             }
-            else if (payload["line"] != null || payload["column"] != null)
+            else
             {
-                var line = payload["line"] == null ? selection.ActivePoint.Line : Math.Max(1, (int)payload["line"] - coordinateBase + 1);
-                var column = payload["column"] == null ? selection.ActivePoint.LineCharOffset : Math.Max(1, (int)payload["column"] - coordinateBase + 1);
-                selection.MoveToLineAndOffset(line, column, false);
+                selection.MoveToLineAndOffset(selection.ActivePoint.Line, selection.ActivePoint.LineCharOffset, false);
+                if (payload["line"] != null || payload["column"] != null)
+                {
+                    var line = payload["line"] == null ? selection.ActivePoint.Line : Math.Max(1, (int)payload["line"] - coordinateBase + 1);
+                    var column = payload["column"] == null ? selection.ActivePoint.LineCharOffset : Math.Max(1, (int)payload["column"] - coordinateBase + 1);
+                    selection.MoveToLineAndOffset(line, column, false);
+                }
             }
             FocusMainWindow(dte);
             return new Dictionary<string, object> { ["path"] = resolved.path, ["line"] = selection.ActivePoint.Line - 1, ["column"] = selection.ActivePoint.LineCharOffset - 1 };

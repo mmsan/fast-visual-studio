@@ -58,6 +58,8 @@
 - `command.shiftUp`
 - `command.moveUpIfLastLine`
 
+`command.navigate` 打开文件、移动光标并清除目标编辑器已有选区；`command.select` 保留并设置请求的选区。
+
 `payload.activeEditor` also carries generic editor context when the host can determine it: `context` is one of `singleQuote`, `doubleQuote`, `backtick`, `braces`, `parentheses`, or `none`; `expressionContext` may contain `expression`, `kind`, `type`, `returnType`, `parameters`, and up to 15 `members`. Visual Studio resolves these fields on a best-effort basis through EnvDTE CodeModel; unresolved fields are omitted rather than guessed. `editor.statusChanged.payload.inputable` is the current inputability; rich object context is sent only in complete snapshots or returned by `command.getObjectInfo`.
 
 `command.queryPythonPackages` accepts `payload.packages` as a batch of import names or `{ "importName", "distributionName" }` objects and queries only the targeted project's configured interpreter. The result includes `interpreter`, `version`, `environmentType`, and a `packages` map.
