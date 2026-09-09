@@ -71,7 +71,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "input", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "end", "inputTop", "shiftDown", "shiftUp", "moveUpIfLastLine" }
+                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "input", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "end", "inputTop", "shiftDown", "shiftUp", "moveUpIfLastLine", "executeIdeCommand" }
             };
         }
 
@@ -138,7 +138,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.input" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.end" || type == "command.inputTop" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.input" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.end" || type == "command.inputTop" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine" || type == "command.executeIdeCommand";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -177,6 +177,7 @@ namespace FastVisualStudioBridge
                             case "command.shiftDown": data = ShiftDirection(payload, 1); break;
                             case "command.shiftUp": data = ShiftDirection(payload, -1); break;
                             case "command.moveUpIfLastLine": data = MoveUpIfLastLine(); break;
+                            case "command.executeIdeCommand": data = ExecuteIdeCommand(dte, payload); break;
                             case "command.fullScreen": data = FullScreen(dte); break;
                             case "command.copyResourcePath": data = CopyResourcePath(dte); break;
                             case "command.queryPythonPackages": data = await QueryPythonPackages(dte, payload, target); break;
@@ -400,6 +401,27 @@ namespace FastVisualStudioBridge
             ThreadHelper.ThrowIfNotOnUIThread();
             if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument)) throw new InvalidOperationException("No active text editor");
             dte.ExecuteCommand("Edit.ExpandSelection");
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+        /// <summary>Executes a registered Visual Studio command through DTE.</summary>
+        private static object ExecuteIdeCommand(DTE dte, JObject payload)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var commandId = ((string)payload["commandId"])?.Trim();
+            if (string.IsNullOrWhiteSpace(commandId)) throw new CommandException("INVALID_COMMAND", "payload.commandId must be a non-empty string");
+            var args = payload["args"] as JArray ?? (payload["args"] == null || payload["args"].Type == JTokenType.Null ? new JArray() : throw new CommandException("INVALID_COMMAND_ARGS", "payload.args must be an array"));
+            if (args.Count > 1 || args.Count == 1 && args[0].Type != JTokenType.String) throw new CommandException("INVALID_COMMAND_ARGS", "Visual Studio commands accept at most one string argument");
+            EnvDTE.Command command;
+            try { command = dte.Commands.Item(commandId); }
+            catch (Exception ex) when (ex is COMException || ex is ArgumentException) { throw new CommandException("COMMAND_NOT_FOUND", "Visual Studio command not found: " + commandId); }
+            if (command == null) throw new CommandException("COMMAND_NOT_FOUND", "Visual Studio command not found: " + commandId);
+            try
+            {
+                if (!command.IsAvailable) throw new CommandException("COMMAND_UNAVAILABLE", "Visual Studio command is not available: " + commandId);
+                dte.ExecuteCommand(commandId, args.Count == 0 ? "" : (string)args[0]);
+            }
+            catch (COMException ex) { throw new CommandException("COMMAND_EXECUTION_FAILED", ex.Message); }
             return new Dictionary<string, object> { ["handled"] = true };
         }
 

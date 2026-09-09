@@ -10,7 +10,7 @@
 
 - 默认连接 `ws://127.0.0.1:19900`，断线后按 200/500/1000/2000 毫秒重连。
 - 上报 `bridge.hello`、`focus.changed`、`editor.state` 和只在输入能力变化时发送的轻量 `editor.statusChanged`；不再发送高频的 `editor.caretChanged` 和 `editor.documentChanged`。
-- 支持 `command.ping`、`command.getState`、`command.getInputable`、`command.isEditorFocused`、`command.getContext`、`command.getObjectInfo`、`command.getSelectedText`、`command.getCurrentLine`、`command.getCurrentLineContent`、`command.isFullScreen`、`command.listProjects`、`command.navigate`、`command.select`、`command.find`、`command.deleteSelection`、`command.input`、`command.requestFocus`、`command.fullScreen`、`command.copyResourcePath`、`command.queryPythonPackages`、`command.home`、`command.end`、`command.inputTop`、`command.shiftDown` 和 `command.shiftUp`。
+- 支持 `command.ping`、`command.getState`、`command.getInputable`、`command.isEditorFocused`、`command.getContext`、`command.getObjectInfo`、`command.getSelectedText`、`command.getCurrentLine`、`command.getCurrentLineContent`、`command.isFullScreen`、`command.listProjects`、`command.navigate`、`command.select`、`command.find`、`command.deleteSelection`、`command.input`、`command.requestFocus`、`command.fullScreen`、`command.copyResourcePath`、`command.queryPythonPackages`、`command.executeIdeCommand`、`command.home`、`command.end`、`command.inputTop`、`command.shiftDown` 和 `command.shiftUp`。
 - `command.deleteSelection` 只有在当前选区内容与 `payload.expectedText` 完全一致时才删除；内容不一致时成功返回但不修改文档。
 - `command.input` 在当前光标处输入 `payload.text`，有选区时替换选区；空文本会删除当前选区。
 - `payload.activeEditor` 附带通用 `context` 和可选 `expressionContext`；Visual Studio 会通过 EnvDTE CodeModel 尽力解析当前表达式的对象类型、方法返回类型、参数和成员，无法解析时保留表达式文本；Python 命令按需批量查询目标项目解释器中的指定包，不枚举整个环境。

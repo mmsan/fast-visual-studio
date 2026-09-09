@@ -57,6 +57,7 @@
 - `command.shiftDown`
 - `command.shiftUp`
 - `command.moveUpIfLastLine`
+- `command.executeIdeCommand`
 
 `command.navigate` 打开文件、移动光标并清除目标编辑器已有选区；`command.select` 保留并设置请求的选区。
 
@@ -75,6 +76,8 @@
 `command.home` clears the active selection and moves its caret to the logical document-line start. `command.end` clears the active selection and moves its caret to the logical document-line end. `command.inputTop` skips consecutive full-line `//`, Python `#`, and `/* ... */` comments at the document top, then inserts `payload.code` followed by a line break above the first non-comment line without actively touching the caret or selection. `command.shiftDown` and `command.shiftUp` extend the selection by logical document lines; `payload.count` is optional and defaults to `1`. These commands use logical document lines, so soft wrapping does not affect `home`, `end`, or `inputTop` document positions or consume movement steps.
 
 `command.moveUpIfLastLine` requires `target.instanceId`. It clears the active text-view selection and moves its primary caret up one line only when that caret is on the final document line; otherwise it successfully returns `data.handled: false`.
+
+`command.executeIdeCommand` requires `target.instanceId` and a non-empty `payload.commandId`. It calls `DTE.ExecuteCommand(commandId, args)` directly without relying on a key binding. The optional shared `payload.args` array may contain at most one string, which becomes the Visual Studio command argument string. Missing commands return `COMMAND_NOT_FOUND`; currently unavailable commands return `COMMAND_UNAVAILABLE`.
 
 `command.deleteSelection` requires `target.instanceId` and `payload.expectedText`. Visual Studio deletes the current editor selection only when its text exactly matches the expected text. A mismatch is a successful no-op with `data.handled: true`, `data.matched: false`, and `data.deleted: false`.
 
