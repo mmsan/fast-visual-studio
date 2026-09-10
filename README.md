@@ -20,6 +20,8 @@
 - 支持按 VS 进程和项目精确定位；导航仅允许访问当前打开解决方案或项目目录内的文件。
 - 设置位置：**工具 → 选项 → Fast Visual Studio Bridge → 常规**。
 
+`command.direction` 原生执行 `left`、`right`、`shift left`、`shift right`、`ctrl shift left`、`ctrl shift right` 或 `shift end`；可选 `payload.count` 默认 `1`。
+
 ## 日志
 
 连接失败、重连和发送失败会写入 Visual Studio 标准 `ActivityLog`；同时插件会在 `%LOCALAPPDATA%\Mirror\FastVisualStudioBridge\Logs` 下按天保存简短日志。插件每次写日志时自动删除 3 天以前的日志，不记录源码、选区或 Token。

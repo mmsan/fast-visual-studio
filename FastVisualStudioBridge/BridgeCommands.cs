@@ -71,7 +71,7 @@ namespace FastVisualStudioBridge
                 ["fullScreen"] = IsFullScreen(dte),
                 ["editorOpenedAt"] = SnapshotCollector.CurrentEditorOpenedAt(dte),
                 ["activeProject"] = ProjectForFile(dte, dte.ActiveDocument?.FullName)?.ToDictionary(),
-                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "input", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "end", "inputTop", "shiftDown", "shiftUp", "moveUpIfLastLine", "executeIdeCommand" }
+                ["capabilities"] = new[] { "state", "getInputable", "isEditorFocused", "getContext", "getObjectInfo", "getSelectedText", "getCurrentLine", "getCurrentLineContent", "navigate", "select", "find", "deleteSelection", "input", "requestFocus", "fullScreen", "isFullScreen", "listProjects", "copyResourcePath", "pythonPackages", "ctrlW", "ctrlShiftW", "shiftHome", "home", "end", "direction", "inputTop", "shiftDown", "shiftUp", "moveUpIfLastLine", "executeIdeCommand" }
             };
         }
 
@@ -138,7 +138,7 @@ namespace FastVisualStudioBridge
                 var type = (string)message["type"] ?? "";
                 var target = message["target"] as JObject ?? new JObject();
                 var payload = message["payload"] as JObject ?? new JObject();
-                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.input" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.end" || type == "command.inputTop" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine" || type == "command.executeIdeCommand";
+                var mutating = type == "command.navigate" || type == "command.select" || type == "command.find" || type == "command.deleteSelection" || type == "command.input" || type == "command.requestFocus" || type == "command.fullScreen" || type == "command.copyResourcePath" || type == "command.queryPythonPackages" || type == "command.ctrlW" || type == "command.ctrlShiftW" || type == "command.shiftHome" || type == "command.home" || type == "command.end" || type == "command.direction" || type == "command.inputTop" || type == "command.shiftDown" || type == "command.shiftUp" || type == "command.moveUpIfLastLine" || type == "command.executeIdeCommand";
                 var targetInstance = (string)target["instanceId"];
                 if (mutating && string.IsNullOrWhiteSpace(targetInstance)) throw new ArgumentException("target.instanceId is required for this command");
                 if (targetInstance != null && targetInstance != bridge.InstanceId) return;
@@ -173,6 +173,7 @@ namespace FastVisualStudioBridge
                             case "command.shiftHome": data = ShiftHome(dte); break;
                             case "command.home": data = Home(); break;
                             case "command.end": data = End(); break;
+                            case "command.direction": data = Direction(dte, payload); break;
                             case "command.inputTop": data = InputTop(payload); break;
                             case "command.shiftDown": data = ShiftDirection(payload, 1); break;
                             case "command.shiftUp": data = ShiftDirection(payload, -1); break;
@@ -532,6 +533,27 @@ namespace FastVisualStudioBridge
             var end = view.Selection.ActivePoint.Position.GetContainingLine().End;
             view.Selection.Clear();
             view.Caret.MoveTo(end);
+            return new Dictionary<string, object> { ["handled"] = true };
+        }
+
+        /// <summary>Executes a supported native horizontal caret or selection movement.</summary>
+        private static object Direction(DTE dte, JObject payload)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument text)) throw new InvalidOperationException("No active text editor");
+            var command = (string)payload["command"];
+            var count = Math.Max(1, payload.Value<int?>("count") ?? 1);
+            switch (command)
+            {
+                case "left": text.Selection.CharLeft(false, count); break;
+                case "right": text.Selection.CharRight(false, count); break;
+                case "shift left": text.Selection.CharLeft(true, count); break;
+                case "shift right": text.Selection.CharRight(true, count); break;
+                case "ctrl shift left": text.Selection.WordLeft(true, count); break;
+                case "ctrl shift right": text.Selection.WordRight(true, count); break;
+                case "shift end": text.Selection.EndOfLine(true); break;
+                default: throw new ArgumentException("Unsupported direction command");
+            }
             return new Dictionary<string, object> { ["handled"] = true };
         }
 

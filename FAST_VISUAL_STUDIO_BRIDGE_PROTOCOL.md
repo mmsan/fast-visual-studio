@@ -53,6 +53,7 @@
 - `command.queryPythonPackages`
 - `command.home`
 - `command.end`
+- `command.direction`
 - `command.inputTop`
 - `command.shiftDown`
 - `command.shiftUp`
@@ -74,6 +75,8 @@
 `command.getContext` actively reads the current syntax context on the Visual Studio UI thread. It returns `singleQuote`, `doubleQuote`, `backtick`, `parentheses`, `braces`, `none`, or `null` when no active editor exists. The Fast-side shortcut is `await f.editorBridge.getCurrentContext()`.
 
 `command.home` clears the active selection and moves its caret to the logical document-line start. `command.end` clears the active selection and moves its caret to the logical document-line end. `command.inputTop` skips consecutive full-line `//`, Python `#`, and `/* ... */` comments at the document top, then inserts `payload.code` followed by a line break above the first non-comment line without actively touching the caret or selection. `command.shiftDown` and `command.shiftUp` extend the selection by logical document lines; `payload.count` is optional and defaults to `1`. These commands use logical document lines, so soft wrapping does not affect `home`, `end`, or `inputTop` document positions or consume movement steps.
+
+`command.direction` natively performs `left`, `right`, `shift left`, `shift right`, `ctrl shift left`, `ctrl shift right`, or `shift end`; optional `payload.count` defaults to `1`.
 
 `command.moveUpIfLastLine` requires `target.instanceId`. It clears the active text-view selection and moves its primary caret up one line only when that caret is on the final document line; otherwise it successfully returns `data.handled: false`.
 
