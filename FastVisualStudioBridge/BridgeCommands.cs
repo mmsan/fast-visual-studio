@@ -82,7 +82,8 @@ namespace FastVisualStudioBridge
             var source = new Dictionary<string, object>
             {
                 ["instanceId"] = instanceId, ["connectionId"] = connectionId,
-                ["projects"] = projects.Select(p => p.ToDictionary()).ToList()
+                ["projects"] = projects.Select(p => p.ToDictionary()).ToList(),
+                ["nativeWindows"] = NativeWindows(dte)
             };
             try
             {
@@ -100,6 +101,7 @@ namespace FastVisualStudioBridge
             var processId = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
             var foreground = GetForegroundWindow();
             var mainWindow = dte.MainWindow.HWnd;
+            var activeProject = ProjectForFile(dte, dte.ActiveDocument?.FullName);
             var windows = new List<IDictionary<string, object>>();
             var seen = new HashSet<IntPtr>();
 
@@ -108,12 +110,12 @@ namespace FastVisualStudioBridge
                 GetWindowThreadProcessId(hwnd, out var ownerProcessId);
                 if (ownerProcessId != processId || !IsWindowVisible(hwnd)) return true;
                 seen.Add(hwnd);
-                windows.Add(DescribeNativeWindow(hwnd));
+                windows.Add(DescribeNativeWindow(hwnd, hwnd == mainWindow ? activeProject : null));
                 return true;
             }, IntPtr.Zero);
 
             if (mainWindow != IntPtr.Zero && !seen.Contains(mainWindow))
-                windows.Add(DescribeNativeWindow(mainWindow));
+                windows.Add(DescribeNativeWindow(mainWindow, activeProject));
 
             return new Dictionary<string, object>
             {
@@ -122,9 +124,11 @@ namespace FastVisualStudioBridge
             };
         }
 
-        private static IDictionary<string, object> DescribeNativeWindow(IntPtr hwnd)
+        private static IDictionary<string, object> DescribeNativeWindow(IntPtr hwnd, ProjectInfo project)
         {
-            return new Dictionary<string, object> { ["handle"] = UnsignedHandle(hwnd) };
+            var result = new Dictionary<string, object> { ["handle"] = UnsignedHandle(hwnd) };
+            if (project != null) result["project"] = project.ToDictionary();
+            return result;
         }
 
         private static string UnsignedHandle(IntPtr hwnd) => unchecked((ulong)hwnd.ToInt64()).ToString();

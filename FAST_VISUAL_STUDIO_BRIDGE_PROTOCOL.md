@@ -16,7 +16,7 @@
 
 ## 身份
 
-`bridge.hello.payload.client` 为 `fast-visual-studio-bridge`。握手包含进程实例 ID、连接 ID、进程 ID、当前进程拥有的顶层窗口句柄、当前解决方案/项目以及能力列表。每条消息的 `source` 都包含实例身份、当前项目身份和最新的精简 `nativeWindows`，以便浮动编辑器窗口创建、关闭或激活后刷新句柄列表；窗口条目只保留句柄。
+`bridge.hello.payload.client` 为 `fast-visual-studio-bridge`。握手包含进程实例 ID、连接 ID、进程 ID、当前进程拥有的顶层窗口句柄、当前解决方案/项目以及能力列表。每条消息的 `source` 都包含实例身份、当前项目身份和最新的 `nativeWindows`，以便浮动编辑器窗口创建、关闭或激活后刷新句柄列表；主窗口条目还包含当前活动文档所属的 `project`，供服务端按前台 HWND 精确关联项目。
 
 ## 事件
 
