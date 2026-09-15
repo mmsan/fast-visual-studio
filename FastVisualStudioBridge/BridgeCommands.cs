@@ -404,9 +404,7 @@ namespace FastVisualStudioBridge
         private static object CtrlW(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument)) throw new InvalidOperationException("No active text editor");
-            dte.ExecuteCommand("Edit.ExpandSelection");
-            return new Dictionary<string, object> { ["handled"] = true };
+            return ExecuteSelectionCommand(dte, "Edit.ExpandSelection");
         }
 
         /// <summary>Executes a registered Visual Studio command through DTE.</summary>
@@ -433,8 +431,29 @@ namespace FastVisualStudioBridge
         private static object CtrlShiftW(DTE dte)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            return ExecuteSelectionCommand(dte, "Edit.ContractSelection");
+        }
+
+        /// <summary>Focuses the tracked editor view, logs command availability, and executes a selection command.</summary>
+        private static object ExecuteSelectionCommand(DTE dte, string commandId)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
             if (!(dte.ActiveDocument?.Object("TextDocument") is TextDocument)) throw new InvalidOperationException("No active text editor");
-            dte.ExecuteCommand("Edit.ContractSelection");
+            var view = FastBridgePackage.Instance?.Bridge?.CurrentActiveTextView;
+            var command = dte.Commands.Item(commandId);
+            FocusMainWindow(dte);
+            dte.ActiveDocument.Activate();
+            if (view != null && !view.IsClosed) view.VisualElement.Focus();
+            var selectedCommandId = commandId;
+            if (!command.IsAvailable)
+            {
+                selectedCommandId = commandId == "Edit.ExpandSelection"
+                    ? "ReSharper.ReSharper_ExtendSelection"
+                    : "ReSharper.ReSharper_ShrinkSelection";
+                try { command = dte.Commands.Item(selectedCommandId); }
+                catch (Exception ex) when (ex is COMException || ex is ArgumentException) { selectedCommandId = commandId; }
+            }
+            dte.ExecuteCommand(selectedCommandId);
             return new Dictionary<string, object> { ["handled"] = true };
         }
 
