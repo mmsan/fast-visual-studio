@@ -8,7 +8,7 @@
 
 - 支持 `command.getSelectedText` 主动读取当前编辑器的选中文本、`command.getCurrentLine` 读取光标所在的一基行号，以及 `command.getCurrentLineContent` 读取当前编辑器行内容；三者均立即返回当前值。没有选择时前者返回空字符串，未开启 `SendText` 或没有活动编辑器时返回 `null`。
 
-- 默认连接 `ws://127.0.0.1:19900`，断线后按 200/500/1000/2000 毫秒重连。
+- 默认连接 `ws://127.0.0.1:9072`，断线后按 200/500/1000/2000 毫秒重连。
 - 上报 `bridge.hello`、`focus.changed`、`editor.state` 和只在输入能力变化时发送的轻量 `editor.statusChanged`；不再发送高频的 `editor.caretChanged` 和 `editor.documentChanged`。
 - 支持 `command.ping`、`command.getState`、`command.getInputable`、`command.isEditorFocused`、`command.getContext`、`command.getObjectInfo`、`command.getSelectedText`、`command.getCurrentLine`、`command.getCurrentLineContent`、`command.isFullScreen`、`command.listProjects`、`command.navigate`、`command.select`、`command.find`、`command.deleteSelection`、`command.input`、`command.requestFocus`、`command.fullScreen`、`command.copyResourcePath`、`command.queryPythonPackages`、`command.executeIdeCommand`、`command.home`、`command.end`、`command.inputTop`、`command.shiftDown` 和 `command.shiftUp`。
 - `command.deleteSelection` 只有在当前选区内容与 `payload.expectedText` 完全一致时才删除；内容不一致时成功返回但不修改文档。

@@ -10,8 +10,8 @@ namespace FastVisualStudioBridge
         [Category("连接"), DisplayName("主机"), DefaultValue("127.0.0.1")]
         public string Host { get; set; } = "127.0.0.1";
 
-        [Category("连接"), DisplayName("端口"), DefaultValue(19900)]
-        public int Port { get; set; } = 19900;
+        [Category("连接"), DisplayName("端口"), DefaultValue(9072)]
+        public int Port { get; set; } = 9072;
 
         [Category("连接"), DisplayName("WebSocket 路径"), DefaultValue("")]
         public string Path { get; set; } = "";
