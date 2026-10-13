@@ -1,69 +1,51 @@
 # Fast Visual Studio Bridge
 
-全屏状态通过 `command.isFullScreen` 查询，返回 `data.fullScreen`；自动全屏会在握手后查询，确认未全屏才发送 `command.fullScreen`，切换后再次查询确认，并在窗口尚未就绪时重试。
+FastGoTo 的 Visual Studio 配套扩展. 它将当前解决方案、活动文件、编辑器焦点和光标状态连接到 FastGoTo, 让你通过 FastGoTo 定位代码、查找文本、操作选区和输入内容.
 
-这是 `Fast Idea Bridge` 的 Visual Studio 2022 对应插件。它通过本机 WebSocket 服务把 Visual Studio 的当前解决方案、窗口、焦点、活动文件、光标、选择和有限源码上下文发送给 Fast，并接收文件导航命令。
+## 使用前准备
 
-## 功能
+- 64 位 Visual Studio 2022 或 Visual Studio 2026, 支持 Community、Professional 和 Enterprise.
+- 在本机运行 FastGoTo 及其本地连接服务. 扩展默认连接 `ws://127.0.0.1:9072`.
 
-- 支持 `command.getSelectedText` 主动读取当前编辑器的选中文本、`command.getCurrentLine` 读取光标所在的一基行号，以及 `command.getCurrentLineContent` 读取当前编辑器行内容；三者均立即返回当前值。没有选择时前者返回空字符串，未开启 `SendText` 或没有活动编辑器时返回 `null`。
+扩展需要 FastGoTo 配合使用. 安装扩展本身不会启动 FastGoTo 或本地服务.
 
-- 默认连接 `ws://127.0.0.1:9072`，断线后按 200/500/1000/2000 毫秒重连。
-- 上报 `bridge.hello`、`focus.changed`、`editor.state` 和只在输入能力变化时发送的轻量 `editor.statusChanged`；不再发送高频的 `editor.caretChanged` 和 `editor.documentChanged`。
-- 支持 `command.ping`、`command.getState`、`command.getInputable`、`command.isEditorFocused`、`command.getContext`、`command.getObjectInfo`、`command.getSelectedText`、`command.getCurrentLine`、`command.getCurrentLineContent`、`command.isFullScreen`、`command.listProjects`、`command.navigate`、`command.select`、`command.find`、`command.deleteSelection`、`command.input`、`command.requestFocus`、`command.fullScreen`、`command.copyResourcePath`、`command.queryPythonPackages`、`command.executeIdeCommand`、`command.home`、`command.end`、`command.inputTop`、`command.shiftDown` 和 `command.shiftUp`。
-- `command.deleteSelection` 只有在当前选区内容与 `payload.expectedText` 完全一致时才删除；内容不一致时成功返回但不修改文档。
-- `command.input` 在当前光标处输入 `payload.text`，有选区时替换选区；空文本会删除当前选区。
-- `payload.activeEditor` 附带通用 `context` 和可选 `expressionContext`；Visual Studio 会通过 EnvDTE CodeModel 尽力解析当前表达式的对象类型、方法返回类型、参数和成员，无法解析时保留表达式文本；Python 命令按需批量查询目标项目解释器中的指定包，不枚举整个环境。
-- `payload.fullScreen` 表示当前 Visual Studio 窗口是否全屏；`payload.editorOpenedAt` 是当前编辑器打开时间的 Unix 毫秒时间戳。`command.isFullScreen` 会重新查询当前窗口状态并返回 `data.fullScreen`。自动全屏会在 `bridge.hello` 后查询，确认未全屏才发送 `command.fullScreen`，切换后再次查询确认，并在窗口尚未就绪时重试。`command.fullScreen` 是幂等操作，已全屏或状态未知时不会切换。
-- 当 Solution Explorer 获得焦点且选中一个或多个文件/目录时，`command.copyResourcePath` 在 `paths` 返回全部绝对路径；单选时还保留兼容字段 `path`。其他焦点或没有选中资源时返回 `handled: false`，并附带可选的 `reason` 诊断字段。
-- `activeEditor.ownsFocus` 仅在 VS 文本视图实际拥有焦点时为 `true`；焦点位于 Solution Explorer 时为 `false`，即使仍有活动文档。`focus.input` 描述当前焦点输入控件的可编辑性，涵盖文本编辑器、WPF 文本框/可编辑下拉框和原生 Edit 控件。
-- 支持按 VS 进程和项目精确定位；导航仅允许访问当前打开解决方案或项目目录内的文件。
-- 设置位置：**工具 → 选项 → Fast Visual Studio Bridge → 常规**。
+本扩展免费, FastGoTo 提供免费功能及可选的 VIP 订阅.
 
-`command.direction` 原生执行 `left`、`right`、`shift left`、`shift right`、`ctrl shift left`、`ctrl shift right` 或 `shift end`；可选 `payload.count` 默认 `1`。
+## 安装与连接
 
-## 日志
+1. 在 **扩展 | 管理扩展** 中搜索 **Fast Visual Studio Bridge**. 如果尚未找到, 使用发布方提供的 VSIX: 关闭 Visual Studio, 双击 VSIX, 按安装程序提示完成安装.
+2. 启动本机 FastGoTo 和连接服务, 打开解决方案与代码文件.
+3. 扩展默认自动连接. 如需调整, 打开 **工具 | 选项 | Fast Visual Studio Bridge | 常规** 并保存设置.
 
-连接失败、重连和发送失败会写入 Visual Studio 标准 `ActivityLog`；同时插件会在 `%LOCALAPPDATA%\Mirror\FastVisualStudioBridge\Logs` 下按天保存简短日志。插件每次写日志时自动删除 3 天以前的日志，不记录源码、选区或 Token。
+| 设置 | 默认值与用途 |
+| --- | --- |
+| 主机 | `127.0.0.1`, 本机服务地址 |
+| 端口 | `9072`, 服务端口 |
+| WebSocket 路径 | 空, 按服务配置填写 |
+| Bearer Token | 空, 服务启用认证时填写对应 Token |
+| 自动连接 | 开启, 自动连接并在断线后重连 |
+| 发送文本、选择和源码上下文 | 开启, 允许向连接的服务发送文本 |
+| 编辑器上下文字符数 | `200`, 源码上下文字符数, 可设置为 `0–5000` |
 
-握手和状态消息只发送实例、连接、项目、进程、能力及窗口句柄等运行所需信息；不发送安装 ID、IDE/插件版本或窗口标题、类型、尺寸等诊断信息。
+## 可以做什么
 
-## 构建和安装
+通过 FastGoTo 定位文件和代码行、查找文本、读取当前行与选区、移动光标、调整选区、输入或替换文本, 以及执行 Visual Studio 命令和控制全屏. 具体入口由 FastGoTo 提供.
 
-用 Visual Studio 2022 打开 `FastVisualStudioBridge.sln`，还原 NuGet 包后生成解决方案。使用项目构建脚本后，最终安装包统一放在 `dist/FastVisualStudioBridge.vsix`，双击即可安装。
+扩展按 Visual Studio 实例和项目定位操作. 文件导航限制在已打开解决方案或项目内. 查找、输入和选区操作可能移动光标或修改当前文档, 使用前确认目标编辑器.
 
-推荐使用完整构建命令：
+## 文本与隐私
 
-```powershell
-.\build-plugin.cmd
-```
+默认连接本机服务. 开启文本共享时, 扩展可发送输入控件文本、选中文本和有限源码上下文; 密码输入框内容会被隐藏.
 
-普通构建默认为官方发行渠道，不启用插件内置的 `127.0.0.1` 更新器；官方 Marketplace 更新交给 Visual Studio 管理。
+关闭 **发送文本、选择和源码上下文** 后, 扩展仍提供项目、文件、光标和选区范围等结构信息, 依赖文本读取的功能会受限. 此开关控制文本共享, 不会禁用 FastGoTo 发来的编辑操作.
 
-## 本地自动更新
+## 常见问题
 
-发布新版本到本地 Visual Studio 私有扩展源：
+- **没有连接**: 确认 FastGoTo 的本地服务已启动, 主机、端口、路径与 Token 一致, 并已启用 **自动连接**.
+- **读取不到选区或源码**: 确认已打开代码编辑器, 并允许文本共享.
+- **操作没有反应**: 切换到目标解决方案和编辑器, 再从 FastGoTo 重试. Solution Explorer 等工具窗口的焦点与代码编辑器焦点不同.
+- **查看日志**: 在资源管理器地址栏输入 `%LOCALAPPDATA%\Mirror\FastVisualStudioBridge\Logs`. 插件日志保留最近 3 天, 不记录源码、选区内容或 Token; Visual Studio 的 `ActivityLog` 也会记录连接告警.
 
-```powershell
-.\publish-local-plugin.cmd
-```
+官方渠道扩展通过 Visual Studio 管理更新. 设置中的 **自动更新**、**更新源** 和 **检查间隔（秒）** 仅用于本地渠道; 本地更新需要确认后才会关闭 Visual Studio 并安装新版.
 
-本地发布脚本会显式使用 `Local` 构建渠道，启用 loopback 自动更新；不要把该产物上传到官方 Marketplace。
-
-脚本会自动增加补丁版本、构建 Release VSIX、复制到 `D:\docker\www\vs-extensions`，并生成：
-
-```text
-http://127.0.0.1:8800/vs-extensions/AtomFeed.xml
-```
-
-在 Visual Studio 的“工具 → 选项 → 环境 → 扩展 → Additional Extension Galleries”中添加上述地址，并开启自动检查和自动安装扩展更新。更新下载后通常仍需重启 Visual Studio，新程序集才会生效。
-
-Visual Studio Community 2026 可能不提供私有扩展库入口，因此本地渠道插件也内置主动更新：启动约 10 秒后首次读取上述 Atom Feed，之后默认每 10 秒检查一次。跨 VS 实例的更新锁确保同一时间只有一个安装助手。发现新版并下载完成后，先弹窗询问是否立即重启安装；确认后才向所有 Visual Studio 窗口发送正常关闭请求。隐藏助手等待全部实例退出后，会在有限超时内等待当前 VS 安装目录下的 `MSBuild.exe` 结束，并只清理没有主窗口的残留 MSBuild 进程，再通过 `VSIXInstaller.exe /quiet` 执行同 ID 升级，短暂等待后重新打开原来的解决方案。若仍有可见的 VS 或 MSBuild 窗口，助手会记录原因并释放更新锁，稍后重新检查，避免无限等待或强制关闭用户进程。官方渠道构建不包含这套本地更新逻辑。
-
-仓库备份和推送可运行：
-
-```powershell
-.\git-backup.bat
-```
-
-协议与 IDEA 版保持版本 1 兼容，Visual Studio 握手客户端名为 `fast-visual-studio-bridge`。详见 [FAST_VISUAL_STUDIO_BRIDGE_PROTOCOL.md](FAST_VISUAL_STUDIO_BRIDGE_PROTOCOL.md)。
+源码与问题反馈: [mmsan/fast-visual-studio](https://github.com/mmsan/fast-visual-studio).
