@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
   <Metadata>
-    <Identity Id="FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F" Version="0.1.147" Language="zh-CN" Publisher="mmsan" />
+    <Identity Id="FastVisualStudioBridge.27861355-A640-4497-911A-EA99B558E93F" Version="0.1.149" Language="zh-CN" Publisher="mmsan" />
     <DisplayName>Fast Visual Studio Bridge</DisplayName>
     <Description xml:space="preserve">Connect Visual Studio to FastGoTo to open files, navigate code, find text, and work with selections.</Description>
     <Icon>fast.png</Icon>

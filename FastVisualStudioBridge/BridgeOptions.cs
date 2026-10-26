@@ -7,16 +7,16 @@ namespace FastVisualStudioBridge
     [ComVisible(true)]
     public sealed class BridgeOptions : DialogPage
     {
-        [Category("连接"), DisplayName("主机"), DefaultValue("127.0.0.1")]
+        [Category("连接"), DisplayName("主机"), Description("保留旧设置; 自动连接使用 Host 验证的本机地址和当前端口."), DefaultValue("127.0.0.1")]
         public string Host { get; set; } = "127.0.0.1";
 
-        [Category("连接"), DisplayName("端口"), DefaultValue(9072)]
+        [Category("连接"), DisplayName("端口"), Description("保留旧设置; 当前端口由本机 Host 自动发现."), DefaultValue(9072)]
         public int Port { get; set; } = 9072;
 
-        [Category("连接"), DisplayName("WebSocket 路径"), DefaultValue("")]
+        [Category("连接"), DisplayName("WebSocket 路径"), Description("保留旧设置; 自动连接不使用此字段."), DefaultValue("")]
         public string Path { get; set; } = "";
 
-        [Category("连接"), DisplayName("Bearer Token"), PasswordPropertyText(true), DefaultValue("")]
+        [Category("连接"), DisplayName("Bearer Token"), Description("保留旧设置; 自动认证不读取或发送此字段, 无需手动填写."), PasswordPropertyText(true), DefaultValue("")]
         public string Token { get; set; } = "";
 
         [Category("连接"), DisplayName("自动连接"), DefaultValue(true)]

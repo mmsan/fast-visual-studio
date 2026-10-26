@@ -30,6 +30,8 @@ namespace FastVisualStudioBridge
         private readonly SemaphoreSlim sendLock = new SemaphoreSlim(1, 1);
         private readonly string instanceId = Guid.NewGuid().ToString();
         private ClientWebSocket socket;
+        private LocalBridgeAuthentication authentication;
+        private int pendingSends;
         private CancellationTokenSource connection;
         private Task runner;
         private long sequence;
@@ -225,18 +227,25 @@ namespace FastVisualStudioBridge
                 connection = CancellationTokenSource.CreateLinkedTokenSource(stop);
                 var token = connection.Token;
                 var connected = false;
+                ClientWebSocket ws = null;
+                LocalBridgeAuthentication authenticated = null;
                 try
                 {
-                    var ws = new ClientWebSocket();
-                    ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(2);
-                    if (!string.IsNullOrWhiteSpace(options.Token)) ws.Options.SetRequestHeader("Authorization", "Bearer " + options.Token);
-                    ws.Options.SetRequestHeader("X-Visual-Studio-Bridge-Version", "1");
-                    using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    using (var bootstrap = await LocalBridgeAuthentication.BootstrapAsync(token).ConfigureAwait(false))
                     {
-                        timeout.CancelAfter(TimeSpan.FromSeconds(1));
-                        await ws.ConnectAsync(new Uri(options.WebSocketUrl), timeout.Token).ConfigureAwait(false);
+                        ws = new ClientWebSocket();
+                        socket = ws;
+                        ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(2);
+                        ws.Options.SetRequestHeader("X-Visual-Studio-Bridge-Version", "2");
+                        using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(token))
+                        {
+                            timeout.CancelAfter(TimeSpan.FromSeconds(1));
+                            await ws.ConnectAsync(new Uri("ws://127.0.0.1:" + bootstrap.Port), timeout.Token).ConfigureAwait(false);
+                        }
+                        authenticated = await LocalBridgeAuthentication.AuthenticateAsync(ws, bootstrap, token).ConfigureAwait(false);
                     }
-                    socket = ws;
+                    token.ThrowIfCancellationRequested();
+                    authentication = authenticated;
                     connected = true;
                     connectionId = Guid.NewGuid().ToString();
                     lastStatusSignature = null;
@@ -257,7 +266,7 @@ namespace FastVisualStudioBridge
                         await SendAsync("editor.state", snapshot, null).ConfigureAwait(false);
                         await SendStatusIfChanged().ConfigureAwait(false);
                     });
-                    await ReceiveLoopAsync(ws, token).ConfigureAwait(false);
+                    await ReceiveLoopAsync(ws, authenticated, token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception error)
@@ -267,8 +276,13 @@ namespace FastVisualStudioBridge
                 }
                 finally
                 {
-                    var old = socket; socket = null;
-                    old?.Dispose(); connection?.Dispose(); connection = null;
+                    authentication = null;
+                    socket = null;
+                    connection?.Cancel();
+                    ws?.Abort();
+                    authenticated?.Dispose();
+                    ws?.Dispose();
+                    connection?.Dispose(); connection = null;
                 }
                 if (connected && !stop.IsCancellationRequested && options.AutoConnect)
                     LogConnectionEvent("closed", "connection closed; retrying", null, false);
@@ -290,42 +304,59 @@ namespace FastVisualStudioBridge
             }
         }
 
-        private async Task ReceiveLoopAsync(ClientWebSocket ws, CancellationToken token)
+        /// <summary>Dispatches commands only after each authenticated transport frame has been verified.</summary>
+        private async Task ReceiveLoopAsync(ClientWebSocket ws, LocalBridgeAuthentication authenticated, CancellationToken token)
         {
-            var buffer = new byte[8192];
             while (ws.State == WebSocketState.Open && !token.IsCancellationRequested)
             {
-                var text = new StringBuilder();
-                WebSocketReceiveResult result;
-                do
-                {
-                    result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), token).ConfigureAwait(false);
-                    if (result.MessageType == WebSocketMessageType.Close) return;
-                    text.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
-                    if (text.Length > 1_048_576) { await ws.CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too large", token); return; }
-                } while (!result.EndOfMessage);
-                if (result.MessageType == WebSocketMessageType.Text) BridgeCommands.Handle(text.ToString(), this, dte, options, package);
+                var text = await authenticated.ReceiveAsync(ws, token).ConfigureAwait(false);
+                BridgeCommands.Handle(text, this, dte, options, package);
             }
         }
 
+        /// <summary>Sends an existing editor envelope only through the current authenticated connection.</summary>
         internal async Task SendAsync(string type, object payload, string replyTo)
         {
             var ws = socket;
-            if (ws == null || ws.State != WebSocketState.Open) return;
-            await package.JoinableTaskFactory.SwitchToMainThreadAsync();
-            var message = new Dictionary<string, object>
+            var authenticated = authentication;
+            if (ws == null || authenticated == null || ws.State != WebSocketState.Open) return;
+            if (Interlocked.Increment(ref pendingSends) > 64)
             {
-                ["version"] = 1, ["id"] = Guid.NewGuid().ToString(), ["type"] = type,
-                ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                ["sequence"] = Interlocked.Increment(ref sequence), ["payload"] = payload,
-                ["source"] = BridgeCommands.Source(dte, instanceId, connectionId, payload)
-            };
-            if (replyTo != null) message["replyTo"] = replyTo;
-            var bytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(message, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore }));
-            await sendLock.WaitAsync().ConfigureAwait(false);
-            try { if (ws.State == WebSocketState.Open) await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, lifetime.Token).ConfigureAwait(false); }
-            catch (Exception error) { LogConnectionEvent("send:" + type, "message send failed; type=" + type, error, true); }
-            finally { sendLock.Release(); }
+                Interlocked.Decrement(ref pendingSends);
+                ws.Abort();
+                return;
+            }
+            try
+            {
+                var token = connection?.Token ?? lifetime.Token;
+                await package.JoinableTaskFactory.SwitchToMainThreadAsync(token);
+                var message = new Dictionary<string, object>
+                {
+                    ["version"] = 1, ["id"] = Guid.NewGuid().ToString(), ["type"] = type,
+                    ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    ["sequence"] = Interlocked.Increment(ref sequence), ["payload"] = payload,
+                    ["source"] = BridgeCommands.Source(dte, instanceId, connectionId, payload)
+                };
+                if (replyTo != null) message["replyTo"] = replyTo;
+                var bytes = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(message, new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore }));
+                await sendLock.WaitAsync(token).ConfigureAwait(false);
+                try
+                {
+                    if (ReferenceEquals(ws, socket) && ReferenceEquals(authenticated, authentication) && ws.State == WebSocketState.Open)
+                    {
+                        var frame = authenticated.Encrypt(bytes);
+                        await ws.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Text, true, token).ConfigureAwait(false);
+                    }
+                }
+                finally { sendLock.Release(); }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception error)
+            {
+                ws.Abort();
+                LogConnectionEvent("send:" + type, "message send failed; type=" + type, error, true);
+            }
+            finally { Interlocked.Decrement(ref pendingSends); }
         }
 
         private void LogConnectionEvent(string kind, string message, Exception error, bool warning)

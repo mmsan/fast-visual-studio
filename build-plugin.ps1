@@ -7,6 +7,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Load the bundled module even when the caller supplies a different module search path.
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force -ErrorAction Stop
 $projectRoot = $PSScriptRoot
 $solution = Join-Path $projectRoot 'FastVisualStudioBridge.sln'
 $manifest = Join-Path $projectRoot 'FastVisualStudioBridge\source.extension.vsixmanifest'

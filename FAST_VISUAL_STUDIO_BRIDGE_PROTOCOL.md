@@ -1,6 +1,6 @@
 # Fast Visual Studio Bridge 消息协议
 
-插件使用与 Fast Idea Bridge 相同的版本 1 JSON 消息封装：
+插件先完成下述版本 2 认证传输, 再在加密帧内使用与 Fast Idea Bridge 相同的版本 1 应用消息封装：
 
 ```json
 {
@@ -13,6 +13,14 @@
   "source": {}
 }
 ```
+
+## 本机认证传输
+
+认证规则以 [Host 本机桥接认证协议](D:/vs/fast/docs/local-bridge-auth.md) 为准. 插件只从 `%LOCALAPPDATA%/FastGoTo/BrowserBridge/Native/bridge-host-v2.json` 读取最多 16 KiB、无 reparse point 的发现信息, 在同一个本机命名管道句柄上核对 Windows 返回的服务端 PID、`FastGoTo.exe` 名称和规范化进程镜像路径. 管道请求为 `version: 2`, `type: "connect"`, `client: "visualstudio"` 和随机 32 字节小写十六进制 `clientNonce`; 回复的 `peerPid` 必须等于当前 `devenv` PID, 凭据至多有效 30 秒. 请求/回复使用严格 UTF-8 JSON 和 LF, 总时限为 5 秒.
+
+每次重连取得新凭据, 连接 `ws://127.0.0.1:<返回的当前端口>`. 旧主机、端口、路径和 Bearer 配置保留存储兼容, 不用于绕过认证. 插件发送 `bridgeHello` (protocol 2), 验证 `bridgeChallenge` 的 server HMAC, 回复 client HMAC, 再验证首个加密 `bridgeReady` 后才发送 `bridge.hello` 和完整状态. 两端证明及 `clientToServer`/`serverToClient` 密钥均按 Host 协议的紧凑 JSON 数组派生, 双向认证限时 5 秒.
+
+后续消息只使用 `bridgeFrame` 和每方向从 1 严格递增的安全整数序号. AES-256-GCM 的 IV 为四个零字节和 64 位大端序号, AAD 为 `["fast-local-bridge-v2",方向,序号]`, `ciphertext` 为密文拼接 16 字节 tag 的规范 Base64. 明文最多 2 MiB, 待发送消息最多 64 个; 超限、乱序、认证失败或明文传输均关闭连接. .NET Framework 4.7.2 的实现通过 Windows CNG BCrypt 使用 AES-GCM, 不增加加密依赖. 密钥只保留在当前连接内存中, 断开时销毁. 不支持未认证、旧版、远程或仅 Bearer 的回退连接.
 
 ## 身份
 
