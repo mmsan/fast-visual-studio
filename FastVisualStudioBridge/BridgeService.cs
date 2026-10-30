@@ -41,7 +41,6 @@ namespace FastVisualStudioBridge
         private readonly object connectionLogGate = new object();
         private readonly Dictionary<string, ConnectionLogState> connectionLogStates = new Dictionary<string, ConnectionLogState>();
         private DateTime reconnectStartedAt;
-        private bool slowReconnectLogged;
         private TextEditorEvents textEvents;
         private WindowEvents windowEvents;
         private SolutionEvents solutionEvents;
@@ -101,7 +100,6 @@ namespace FastVisualStudioBridge
             connection?.Cancel();
             socket?.Abort();
             reconnectStartedAt = default(DateTime);
-            slowReconnectLogged = false;
             if (options.AutoConnect && (runner == null || runner.IsCompleted)) runner = Task.Run(() => ConnectionLoopAsync(lifetime.Token));
         }
 
@@ -227,6 +225,7 @@ namespace FastVisualStudioBridge
                 connection = CancellationTokenSource.CreateLinkedTokenSource(stop);
                 var token = connection.Token;
                 var connected = false;
+                var transportConnected = false;
                 ClientWebSocket ws = null;
                 LocalBridgeAuthentication authenticated = null;
                 try
@@ -241,6 +240,7 @@ namespace FastVisualStudioBridge
                         {
                             timeout.CancelAfter(TimeSpan.FromSeconds(1));
                             await ws.ConnectAsync(new Uri("ws://127.0.0.1:" + bootstrap.Port), timeout.Token).ConfigureAwait(false);
+                            transportConnected = true;
                         }
                         authenticated = await LocalBridgeAuthentication.AuthenticateAsync(ws, bootstrap, token).ConfigureAwait(false);
                     }
@@ -251,7 +251,6 @@ namespace FastVisualStudioBridge
                     lastStatusSignature = null;
                     attempt = 0;
                     reconnectStartedAt = default(DateTime);
-                    slowReconnectLogged = false;
                     var failures = connectionFailures;
                     connectionFailures = 0;
                     var firstBridgeHandshake = Interlocked.CompareExchange(ref startupFullscreenHandshakeSent, 1, 0) == 0;
@@ -271,8 +270,12 @@ namespace FastVisualStudioBridge
                 catch (OperationCanceledException) { }
                 catch (Exception error)
                 {
+                    if (token.IsCancellationRequested) continue;
                     var failures = ++connectionFailures;
-                    LogConnectionEvent("failure", "connection failed; attempt=" + failures, error, true);
+                    if (transportConnected)
+                        LogConnectionEvent("protocol", "connection failed; attempt=" + failures, error, true);
+                    else if (failures == 1)
+                        BridgeLog.Warning("connection failed; attempt=" + failures, error);
                 }
                 finally
                 {
@@ -293,12 +296,6 @@ namespace FastVisualStudioBridge
                     var delay = retryingFor >= SlowReconnectAfter
                         ? SlowReconnectDelay
                         : TimeSpan.FromMilliseconds(delays[Math.Min(attempt++, delays.Length - 1)]);
-                    if (delay == SlowReconnectDelay && !slowReconnectLogged)
-                    {
-                        slowReconnectLogged = true;
-                        BridgeLog.Information("connection remains unavailable for " + (int)retryingFor.TotalSeconds
-                            + "s; retry delay increased to " + (int)SlowReconnectDelay.TotalMilliseconds + "ms");
-                    }
                     await Task.Delay(delay, stop).ConfigureAwait(false);
                 }
             }
